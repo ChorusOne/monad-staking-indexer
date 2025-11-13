@@ -1,0 +1,30 @@
+-- Role used by the application.
+CREATE ROLE monad_staking_app LOGIN PASSWORD 'monad_staking_app';
+
+-- Role used for migrations and administration.
+CREATE ROLE monad_staking_setup LOGIN PASSWORD 'monad_staking_setup';
+
+-- Role used for querying.
+CREATE ROLE monad_staking_readonly LOGIN PASSWORD 'monad_staking_readonly';
+
+CREATE DATABASE monad_staking OWNER monad_staking_setup;
+
+\connect monad_staking;
+
+-- By default, PostgreSQL creates a schema "public" that can be modified
+-- by any user ("PUBLIC"). We want more selective permissions.
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON SCHEMA public TO monad_staking_app;
+GRANT USAGE ON SCHEMA public TO monad_staking_readonly;
+GRANT USAGE, CREATE ON SCHEMA public TO monad_staking_setup;
+
+-- The user "monad_staking_setup" will create new tables. When it creates them,
+-- "monad_staking_app" and "monad_staking_readonly" should be given access. So we need to
+-- modify the default privileges of "monad_staking_setup" to grant to them.
+ALTER DEFAULT PRIVILEGES FOR ROLE monad_staking_setup
+GRANT SELECT, INSERT, UPDATE ON TABLES
+TO monad_staking_app;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE monad_staking_setup
+GRANT SELECT ON TABLES
+TO monad_staking_readonly;
