@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use eyre::Result;
 use log::info;
 use sqlx::PgPool;
@@ -12,16 +14,24 @@ pub async fn ensure_block(pool: &PgPool, block_meta: &BlockMeta) -> Result<()> {
         ON CONFLICT (block_number) DO NOTHING
         "#,
     )
-    .bind(&block_meta.block_number)
+    .bind(block_meta.block_number as i64)
     .bind(&block_meta.block_hash)
-    .bind(&block_meta.block_timestamp)
+    .bind(block_meta.block_timestamp as i64)
     .execute(pool)
     .await?;
 
     Ok(())
 }
 
-pub async fn get_block_gaps(pool: &PgPool) -> Result<Vec<(i64, i64)>> {
+pub async fn get_max_block_number(pool: &PgPool) -> Result<Option<i64>> {
+    let row = sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(block_number) FROM blocks")
+        .fetch_one(pool)
+        .await?;
+
+    Ok(row)
+}
+
+pub async fn get_block_gaps(pool: &PgPool) -> Result<Vec<Range<u64>>> {
     let rows = sqlx::query_as::<_, (i64, i64)>(
         r#"
         WITH gaps AS (
@@ -38,7 +48,13 @@ pub async fn get_block_gaps(pool: &PgPool) -> Result<Vec<(i64, i64)>> {
     .fetch_all(pool)
     .await?;
 
-    Ok(rows)
+    Ok(rows
+        .iter()
+        .map(|r| Range {
+            start: u64::try_from(r.0).unwrap(),
+            end: u64::try_from(r.1).unwrap(),
+        })
+        .collect())
 }
 
 pub async fn insert_delegate_event(pool: &PgPool, event: &events::DelegateEvent) -> Result<()> {
@@ -51,13 +67,13 @@ pub async fn insert_delegate_event(pool: &PgPool, event: &events::DelegateEvent)
         ON CONFLICT (transaction_hash) DO NOTHING
         "#,
     )
-    .bind(&event.val_id)
+    .bind(event.val_id as i64)
     .bind(&event.delegator)
     .bind(&event.amount)
-    .bind(&event.activation_epoch)
-    .bind(&event.block_meta.block_number)
+    .bind(event.activation_epoch as i64)
+    .bind(event.block_meta.block_number as i64)
     .bind(&event.tx_meta.transaction_hash)
-    .bind(&event.tx_meta.transaction_index)
+    .bind(event.tx_meta.transaction_index as i64)
     .execute(pool)
     .await?;
 
@@ -78,14 +94,14 @@ pub async fn insert_undelegate_event(pool: &PgPool, event: &events::UndelegateEv
         ON CONFLICT (transaction_hash) DO NOTHING
         "#,
     )
-    .bind(&event.val_id)
+    .bind(event.val_id as i64)
     .bind(&event.delegator)
     .bind(event.withdrawal_id)
     .bind(&event.amount)
-    .bind(&event.activation_epoch)
-    .bind(&event.block_meta.block_number)
+    .bind(event.activation_epoch as i64)
+    .bind(event.block_meta.block_number as i64)
     .bind(&event.tx_meta.transaction_hash)
-    .bind(&event.tx_meta.transaction_index)
+    .bind(event.tx_meta.transaction_index as i64)
     .execute(pool)
     .await?;
 
@@ -106,14 +122,14 @@ pub async fn insert_withdraw_event(pool: &PgPool, event: &events::WithdrawEvent)
         ON CONFLICT (transaction_hash) DO NOTHING
         "#,
     )
-    .bind(&event.val_id)
+    .bind(event.val_id as i64)
     .bind(&event.delegator)
     .bind(event.withdrawal_id)
     .bind(&event.amount)
-    .bind(&event.activation_epoch)
-    .bind(&event.block_meta.block_number)
+    .bind(event.activation_epoch as i64)
+    .bind(event.block_meta.block_number as i64)
     .bind(&event.tx_meta.transaction_hash)
-    .bind(&event.tx_meta.transaction_index)
+    .bind(event.tx_meta.transaction_index as i64)
     .execute(pool)
     .await?;
 
@@ -137,13 +153,13 @@ pub async fn insert_claim_rewards_event(
         ON CONFLICT (transaction_hash) DO NOTHING
         "#,
     )
-    .bind(&event.val_id)
+    .bind(event.val_id as i64)
     .bind(&event.delegator)
     .bind(&event.amount)
-    .bind(&event.epoch)
-    .bind(&event.block_meta.block_number)
+    .bind(event.epoch as i64)
+    .bind(event.block_meta.block_number as i64)
     .bind(&event.tx_meta.transaction_hash)
-    .bind(&event.tx_meta.transaction_index)
+    .bind(event.tx_meta.transaction_index as i64)
     .execute(pool)
     .await?;
 
@@ -167,13 +183,13 @@ pub async fn insert_validator_rewarded_event(
         ON CONFLICT (transaction_hash) DO NOTHING
         "#,
     )
-    .bind(&event.validator_id)
+    .bind(event.validator_id as i64)
     .bind(&event.from)
     .bind(&event.amount)
-    .bind(&event.epoch)
-    .bind(&event.block_meta.block_number)
+    .bind(event.epoch as i64)
+    .bind(event.block_meta.block_number as i64)
     .bind(&event.tx_meta.transaction_hash)
-    .bind(&event.tx_meta.transaction_index)
+    .bind(event.tx_meta.transaction_index as i64)
     .execute(pool)
     .await?;
 
@@ -197,11 +213,11 @@ pub async fn insert_epoch_changed_event(
         ON CONFLICT (transaction_hash) DO NOTHING
         "#,
     )
-    .bind(&event.old_epoch)
-    .bind(&event.new_epoch)
-    .bind(&event.block_meta.block_number)
+    .bind(event.old_epoch as i64)
+    .bind(event.new_epoch as i64)
+    .bind(event.block_meta.block_number as i64)
     .bind(&event.tx_meta.transaction_hash)
-    .bind(&event.tx_meta.transaction_index)
+    .bind(event.tx_meta.transaction_index as i64)
     .execute(pool)
     .await?;
 
@@ -225,12 +241,12 @@ pub async fn insert_validator_created_event(
         ON CONFLICT (transaction_hash) DO NOTHING
         "#,
     )
-    .bind(&event.validator_id)
+    .bind(event.validator_id as i64)
     .bind(&event.auth_address)
     .bind(&event.commission)
-    .bind(&event.block_meta.block_number)
+    .bind(event.block_meta.block_number as i64)
     .bind(&event.tx_meta.transaction_hash)
-    .bind(&event.tx_meta.transaction_index)
+    .bind(event.tx_meta.transaction_index as i64)
     .execute(pool)
     .await?;
 
@@ -254,11 +270,11 @@ pub async fn insert_validator_status_changed_event(
         ON CONFLICT (transaction_hash) DO NOTHING
         "#,
     )
-    .bind(&event.validator_id)
-    .bind(&event.flags)
-    .bind(&event.block_meta.block_number)
+    .bind(event.validator_id as i64)
+    .bind(event.flags as i64)
+    .bind(event.block_meta.block_number as i64)
     .bind(&event.tx_meta.transaction_hash)
-    .bind(&event.tx_meta.transaction_index)
+    .bind(event.tx_meta.transaction_index as i64)
     .execute(pool)
     .await?;
 
@@ -282,12 +298,12 @@ pub async fn insert_commission_changed_event(
         ON CONFLICT (transaction_hash) DO NOTHING
         "#,
     )
-    .bind(&event.validator_id)
+    .bind(event.validator_id as i64)
     .bind(&event.old_commission)
     .bind(&event.new_commission)
-    .bind(&event.block_meta.block_number)
+    .bind(event.block_meta.block_number as i64)
     .bind(&event.tx_meta.transaction_hash)
-    .bind(&event.tx_meta.transaction_index)
+    .bind(event.tx_meta.transaction_index as i64)
     .execute(pool)
     .await?;
 
