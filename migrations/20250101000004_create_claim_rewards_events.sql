@@ -5,8 +5,6 @@ CREATE TABLE claim_rewards_events (
     amount NUMERIC(78, 0) NOT NULL,
     epoch BIGINT NOT NULL,
     block_number BIGINT NOT NULL,
-    block_hash VARCHAR(64) NOT NULL,
-    block_timestamp BIGINT NOT NULL,
     transaction_hash VARCHAR(64) NOT NULL,
     transaction_index BIGINT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

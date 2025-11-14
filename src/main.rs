@@ -93,6 +93,17 @@ async fn main() -> Result<()> {
     let pool = db::create_pool(&database_url).await?;
     info!("Database connected");
 
+    info!("Checking for block gaps...");
+    let gaps = db::repository::get_block_gaps(&pool).await?;
+    if gaps.is_empty() {
+        info!("No block gaps found");
+    } else {
+        info!("Found {} block gap(s):", gaps.len());
+        for (start, end) in &gaps {
+            info!("  Gap: blocks {} to {}", start, end);
+        }
+    }
+
     let ws = WsConnect::new(&rpc_url);
     let provider = ProviderBuilder::new().on_ws(ws).await?;
 
