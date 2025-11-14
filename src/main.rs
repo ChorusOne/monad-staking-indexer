@@ -18,6 +18,19 @@ use tokio::sync::mpsc;
 
 use crate::events::StakingEvent;
 
+fn chunk_range(range: Range<u64>, chunk_size: u64) -> Vec<Range<u64>> {
+    let mut chunks = Vec::with_capacity(((range.end - range.start) / chunk_size) as usize);
+    let mut chunk_start = range.start;
+
+    while chunk_start < range.end {
+        let chunk_end = std::cmp::min(chunk_start + chunk_size, range.end);
+        chunks.push(chunk_start..chunk_end);
+        chunk_start = chunk_end;
+    }
+
+    chunks
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::builder()
@@ -94,21 +107,54 @@ async fn process_gaps_task(
     mut gap_rx: mpsc::UnboundedReceiver<Range<u64>>,
 ) -> Result<()> {
     while let Some(range) = gap_rx.recv().await {
-        info!("Processing gap: blocks {} to {}", range.start, range.end);
-        if let Err(e) =
-            process_historical_blocks(&provider, staking_contract_address, &range, log_tx.clone())
-                .await
-        {
-            error!(
-                "Gap backfill failed for blocks {} to {}: {}",
-                range.start, range.end, e
-            );
-        } else {
+        let chunks = chunk_range(range.clone(), 100);
+        let total_blocks = range.end - range.start;
+
+        info!(
+            "Processing gap: blocks {} to {} ({} blocks in {} chunks)",
+            range.start,
+            range.end,
+            total_blocks,
+            chunks.len()
+        );
+
+        for (chunk_idx, chunk_range) in chunks.iter().enumerate() {
             info!(
-                "Gap backfill completed for blocks {} to {}",
-                range.start, range.end
+                "Processing chunk {}/{}: blocks {} to {}",
+                chunk_idx + 1,
+                chunks.len(),
+                chunk_range.start,
+                chunk_range.end - 1
             );
+
+            if let Err(e) = process_historical_blocks(
+                &provider,
+                staking_contract_address,
+                chunk_range,
+                log_tx.clone(),
+            )
+            .await
+            {
+                error!(
+                    "Chunk backfill failed for blocks {} to {}: {}",
+                    chunk_range.start,
+                    chunk_range.end - 1,
+                    e
+                );
+            } else {
+                info!(
+                    "Chunk backfill completed for blocks {} to {}",
+                    chunk_range.start,
+                    chunk_range.end - 1
+                );
+            }
         }
+
+        info!(
+            "Gap backfill fully completed for blocks {} to {}",
+            range.start,
+            range.end - 1
+        );
     }
     Ok(())
 }
