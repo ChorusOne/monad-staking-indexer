@@ -43,10 +43,10 @@ async fn main() -> Result<()> {
 
     info!("Creating RPC connections...");
     let ws_live = WsConnect::new(&rpc_url);
-    let live_provider = ProviderBuilder::new().on_ws(ws_live.clone()).await?;
+    let live_provider = ProviderBuilder::new().on_ws(ws_live).await?;
 
-    //let ws_gaps = WsConnect::new(&rpc_url);
-    let gaps_provider = ProviderBuilder::new().on_ws(ws_live).await?;
+    let ws_gaps = WsConnect::new(&rpc_url);
+    let gaps_provider = ProviderBuilder::new().on_ws(ws_gaps).await?;
     let (gap_tx, gap_rx) = mpsc::unbounded_channel();
 
     let (tx, rx) = mpsc::unbounded_channel();
