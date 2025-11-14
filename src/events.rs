@@ -228,6 +228,22 @@ impl fmt::Display for StakingEvent {
     }
 }
 
+impl StakingEvent {
+    pub fn block_meta(&self) -> &BlockMeta {
+        match self {
+            StakingEvent::Delegate(e) => &e.block_meta,
+            StakingEvent::Undelegate(e) => &e.block_meta,
+            StakingEvent::Withdraw(e) => &e.block_meta,
+            StakingEvent::ClaimRewards(e) => &e.block_meta,
+            StakingEvent::ValidatorRewarded(e) => &e.block_meta,
+            StakingEvent::EpochChanged(e) => &e.block_meta,
+            StakingEvent::ValidatorCreated(e) => &e.block_meta,
+            StakingEvent::ValidatorStatusChanged(e) => &e.block_meta,
+            StakingEvent::CommissionChanged(e) => &e.block_meta,
+        }
+    }
+}
+
 pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
     let block_number = log
         .block_number
