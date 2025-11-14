@@ -28,3 +28,11 @@ TO monad_staking_app;
 ALTER DEFAULT PRIVILEGES FOR ROLE monad_staking_setup
 GRANT SELECT ON TABLES
 TO monad_staking_readonly;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE monad_staking_setup
+GRANT USAGE, SELECT ON SEQUENCES
+TO monad_staking_app;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE monad_staking_setup
+GRANT SELECT ON SEQUENCES
+TO monad_staking_readonly;

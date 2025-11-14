@@ -11,8 +11,6 @@ use eyre::Result;
 use futures_util::stream::StreamExt;
 use log::{error, info};
 
-use events::StakingEvent;
-
 // https://docs.monad.xyz/developer-essentials/staking/staking-precompile#events
 sol! {
     #[allow(missing_docs)]
@@ -46,6 +44,35 @@ sol! {
             address indexed delegator,
             uint256 amount,
             uint64 epoch
+        );
+
+        event ValidatorRewarded(
+            uint64 indexed validatorId,
+            address indexed from,
+            uint256 amount,
+            uint64 epoch
+        );
+
+        event EpochChanged(
+            uint64 oldEpoch,
+            uint64 newEpoch
+        );
+
+        event ValidatorCreated(
+            uint64 indexed validatorId,
+            address indexed authAddress,
+            uint256 commission
+        );
+
+        event ValidatorStatusChanged(
+            uint64 indexed validatorId,
+            uint64 flags
+        );
+
+        event CommissionChanged(
+            uint64 indexed validatorId,
+            uint256 oldCommission,
+            uint256 newCommission
         );
     }
 }
@@ -83,51 +110,10 @@ async fn main() -> Result<()> {
     while let Some(log) = stream.next().await {
         match events::extract_event(&log) {
             Ok(Some(event)) => {
-                match &event {
-                    StakingEvent::Delegate(e) => {
-                        info!(
-                            "DELEGATE EVENT: validator_id={}, amount={}, activation_epoch={}, block={}, timestamp={}",
-                            e.val_id,
-                            e.amount,
-                            e.activation_epoch,
-                            e.block_number,
-                            e.block_timestamp
-                        );
-                    }
-                    StakingEvent::Undelegate(e) => {
-                        info!(
-                            "UNDELEGATE EVENT: validator_id={}, withdrawal_id={}, amount={}, activation_epoch={}, block={}, timestamp={}",
-                            e.val_id,
-                            e.withdrawal_id,
-                            e.amount,
-                            e.activation_epoch,
-                            e.block_number,
-                            e.block_timestamp
-                        );
-                    }
-                    StakingEvent::Withdraw(e) => {
-                        info!(
-                            "WITHDRAW EVENT: validator_id={}, withdrawal_id={}, amount={}, activation_epoch={}, block={}, timestamp={}",
-                            e.val_id,
-                            e.withdrawal_id,
-                            e.amount,
-                            e.activation_epoch,
-                            e.block_number,
-                            e.block_timestamp
-                        );
-                    }
-                    StakingEvent::ClaimRewards(e) => {
-                        info!(
-                            "CLAIM REWARDS EVENT: validator_id={}, amount={}, epoch={}, block={}, timestamp={}",
-                            e.val_id, e.amount, e.epoch, e.block_number, e.block_timestamp
-                        );
-                    }
-                }
-
                 if let Err(e) = db::repository::insert_staking_event(&pool, &event).await {
-                    error!("Failed to insert event into database: {}", e);
+                    error!("Failed to insert event ({event}) into database: {}", e);
                 } else {
-                    info!("Event stored in database");
+                    info!("{event} stored in database");
                 }
             }
             Ok(None) => (),
