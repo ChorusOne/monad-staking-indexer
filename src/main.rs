@@ -52,7 +52,10 @@ sol! {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init();
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .format_target(false)
+        .init();
 
     info!("Starting Monad Staking Indexer...");
 
