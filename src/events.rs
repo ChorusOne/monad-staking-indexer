@@ -4,6 +4,7 @@ use bigdecimal::{
     num_bigint::{BigInt, Sign},
 };
 use eyre::Result;
+use std::fmt;
 
 use crate::StakingPrecompile;
 
@@ -14,17 +15,36 @@ fn u256_to_bigdecimal(value: alloy::primitives::U256) -> BigDecimal {
 }
 
 #[derive(Debug, Clone)]
+pub struct BlockMeta {
+    pub block_number: BigDecimal,
+    pub block_hash: String,
+    pub block_timestamp: BigDecimal,
+}
+
+#[derive(Debug, Clone)]
+pub struct TxMeta {
+    pub transaction_hash: String,
+    pub transaction_index: BigDecimal,
+}
+
+#[derive(Debug, Clone)]
 pub struct DelegateEvent {
     pub val_id: BigDecimal,
     pub delegator: String,
     pub amount: BigDecimal,
     pub activation_epoch: BigDecimal,
-    pub block_number: BigDecimal,
-    pub block_hash: String,
-    pub block_timestamp: BigDecimal,
-    pub transaction_hash: String,
-    pub transaction_index: BigDecimal,
-    pub log_index: BigDecimal,
+    pub block_meta: BlockMeta,
+    pub tx_meta: TxMeta,
+}
+
+impl fmt::Display for DelegateEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Delegate block={} validator={}",
+            self.block_meta.block_number, self.val_id
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -34,12 +54,18 @@ pub struct UndelegateEvent {
     pub withdrawal_id: i16,
     pub amount: BigDecimal,
     pub activation_epoch: BigDecimal,
-    pub block_number: BigDecimal,
-    pub block_hash: String,
-    pub block_timestamp: BigDecimal,
-    pub transaction_hash: String,
-    pub transaction_index: BigDecimal,
-    pub log_index: BigDecimal,
+    pub block_meta: BlockMeta,
+    pub tx_meta: TxMeta,
+}
+
+impl fmt::Display for UndelegateEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Undelegate block={} validator={}",
+            self.block_meta.block_number, self.val_id
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -49,12 +75,18 @@ pub struct WithdrawEvent {
     pub withdrawal_id: i16,
     pub amount: BigDecimal,
     pub activation_epoch: BigDecimal,
-    pub block_number: BigDecimal,
-    pub block_hash: String,
-    pub block_timestamp: BigDecimal,
-    pub transaction_hash: String,
-    pub transaction_index: BigDecimal,
-    pub log_index: BigDecimal,
+    pub block_meta: BlockMeta,
+    pub tx_meta: TxMeta,
+}
+
+impl fmt::Display for WithdrawEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Withdraw block={} validator={}",
+            self.block_meta.block_number, self.val_id
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -63,12 +95,108 @@ pub struct ClaimRewardsEvent {
     pub delegator: String,
     pub amount: BigDecimal,
     pub epoch: BigDecimal,
-    pub block_number: BigDecimal,
-    pub block_hash: String,
-    pub block_timestamp: BigDecimal,
-    pub transaction_hash: String,
-    pub transaction_index: BigDecimal,
-    pub log_index: BigDecimal,
+    pub block_meta: BlockMeta,
+    pub tx_meta: TxMeta,
+}
+
+impl fmt::Display for ClaimRewardsEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ClaimRewards block={} validator={}",
+            self.block_meta.block_number, self.val_id
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidatorRewardedEvent {
+    pub validator_id: BigDecimal,
+    pub from: String,
+    pub amount: BigDecimal,
+    pub epoch: BigDecimal,
+    pub block_meta: BlockMeta,
+    pub tx_meta: TxMeta,
+}
+
+impl fmt::Display for ValidatorRewardedEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ValidatorRewarded block={} validator={}",
+            self.block_meta.block_number, self.validator_id
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EpochChangedEvent {
+    pub old_epoch: BigDecimal,
+    pub new_epoch: BigDecimal,
+    pub block_meta: BlockMeta,
+    pub tx_meta: TxMeta,
+}
+
+impl fmt::Display for EpochChangedEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "EpochChanged block={}", self.block_meta.block_number)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidatorCreatedEvent {
+    pub validator_id: BigDecimal,
+    pub auth_address: String,
+    pub commission: BigDecimal,
+    pub block_meta: BlockMeta,
+    pub tx_meta: TxMeta,
+}
+
+impl fmt::Display for ValidatorCreatedEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ValidatorCreated block={} validator={}",
+            self.block_meta.block_number, self.validator_id
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidatorStatusChangedEvent {
+    pub validator_id: BigDecimal,
+    pub flags: BigDecimal,
+    pub block_meta: BlockMeta,
+    pub tx_meta: TxMeta,
+}
+
+impl fmt::Display for ValidatorStatusChangedEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ValidatorStatusChanged block={} validator={}",
+            self.block_meta.block_number, self.validator_id
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CommissionChangedEvent {
+    pub validator_id: BigDecimal,
+    pub old_commission: BigDecimal,
+    pub new_commission: BigDecimal,
+    pub block_meta: BlockMeta,
+    pub tx_meta: TxMeta,
+}
+
+impl fmt::Display for CommissionChangedEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "CommissionChanged block={} validator={}",
+            self.block_meta.block_number, self.validator_id
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +205,27 @@ pub enum StakingEvent {
     Undelegate(UndelegateEvent),
     Withdraw(WithdrawEvent),
     ClaimRewards(ClaimRewardsEvent),
+    ValidatorRewarded(ValidatorRewardedEvent),
+    EpochChanged(EpochChangedEvent),
+    ValidatorCreated(ValidatorCreatedEvent),
+    ValidatorStatusChanged(ValidatorStatusChangedEvent),
+    CommissionChanged(CommissionChangedEvent),
+}
+
+impl fmt::Display for StakingEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StakingEvent::Delegate(e) => write!(f, "{}", e),
+            StakingEvent::Undelegate(e) => write!(f, "{}", e),
+            StakingEvent::Withdraw(e) => write!(f, "{}", e),
+            StakingEvent::ClaimRewards(e) => write!(f, "{}", e),
+            StakingEvent::ValidatorRewarded(e) => write!(f, "{}", e),
+            StakingEvent::EpochChanged(e) => write!(f, "{}", e),
+            StakingEvent::ValidatorCreated(e) => write!(f, "{}", e),
+            StakingEvent::ValidatorStatusChanged(e) => write!(f, "{}", e),
+            StakingEvent::CommissionChanged(e) => write!(f, "{}", e),
+        }
+    }
 }
 
 pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
@@ -95,12 +244,20 @@ pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
     let transaction_index = log
         .transaction_index
         .ok_or_else(|| eyre::eyre!("Missing transaction index"))?;
-    let log_index = log
-        .log_index
-        .ok_or_else(|| eyre::eyre!("Missing log index"))?;
 
     let Some(topic0) = log.topic0() else {
         return Ok(None);
+    };
+
+    let block_meta = BlockMeta {
+        block_number: BigDecimal::from(block_number),
+        block_hash: hex::encode(block_hash),
+        block_timestamp: BigDecimal::from(block_timestamp),
+    };
+
+    let tx_meta = TxMeta {
+        transaction_hash: hex::encode(transaction_hash),
+        transaction_index: BigDecimal::from(transaction_index),
     };
 
     let inner_log = PrimitiveLog {
@@ -116,12 +273,8 @@ pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
                 delegator: hex::encode(decoded.delegator),
                 amount: u256_to_bigdecimal(decoded.amount),
                 activation_epoch: BigDecimal::from(decoded.activationEpoch),
-                block_number: BigDecimal::from(block_number),
-                block_hash: hex::encode(block_hash),
-                block_timestamp: BigDecimal::from(block_timestamp),
-                transaction_hash: hex::encode(transaction_hash),
-                transaction_index: BigDecimal::from(transaction_index),
-                log_index: BigDecimal::from(log_index),
+                block_meta,
+                tx_meta,
             })))
         }
         StakingPrecompile::Undelegate::SIGNATURE_HASH => {
@@ -132,12 +285,8 @@ pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
                 withdrawal_id: decoded.withdrawal_id as i16,
                 amount: u256_to_bigdecimal(decoded.amount),
                 activation_epoch: BigDecimal::from(decoded.activationEpoch),
-                block_number: BigDecimal::from(block_number),
-                block_hash: hex::encode(block_hash),
-                block_timestamp: BigDecimal::from(block_timestamp),
-                transaction_hash: hex::encode(transaction_hash),
-                transaction_index: BigDecimal::from(transaction_index),
-                log_index: BigDecimal::from(log_index),
+                block_meta,
+                tx_meta,
             })))
         }
         StakingPrecompile::Withdraw::SIGNATURE_HASH => {
@@ -148,12 +297,8 @@ pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
                 withdrawal_id: decoded.withdrawal_id as i16,
                 amount: u256_to_bigdecimal(decoded.amount),
                 activation_epoch: BigDecimal::from(decoded.activationEpoch),
-                block_number: BigDecimal::from(block_number),
-                block_hash: hex::encode(block_hash),
-                block_timestamp: BigDecimal::from(block_timestamp),
-                transaction_hash: hex::encode(transaction_hash),
-                transaction_index: BigDecimal::from(transaction_index),
-                log_index: BigDecimal::from(log_index),
+                block_meta,
+                tx_meta,
             })))
         }
         StakingPrecompile::ClaimRewards::SIGNATURE_HASH => {
@@ -163,13 +308,66 @@ pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
                 delegator: hex::encode(decoded.delegator),
                 amount: u256_to_bigdecimal(decoded.amount),
                 epoch: BigDecimal::from(decoded.epoch),
-                block_number: BigDecimal::from(block_number),
-                block_hash: hex::encode(block_hash),
-                block_timestamp: BigDecimal::from(block_timestamp),
-                transaction_hash: hex::encode(transaction_hash),
-                transaction_index: BigDecimal::from(transaction_index),
-                log_index: BigDecimal::from(log_index),
+                block_meta,
+                tx_meta,
             })))
+        }
+        StakingPrecompile::ValidatorRewarded::SIGNATURE_HASH => {
+            let decoded = StakingPrecompile::ValidatorRewarded::decode_log(&inner_log, true)?;
+            Ok(Some(StakingEvent::ValidatorRewarded(
+                ValidatorRewardedEvent {
+                    validator_id: BigDecimal::from(decoded.validatorId),
+                    from: hex::encode(decoded.from),
+                    amount: u256_to_bigdecimal(decoded.amount),
+                    epoch: BigDecimal::from(decoded.epoch),
+                    block_meta,
+                    tx_meta,
+                },
+            )))
+        }
+        StakingPrecompile::EpochChanged::SIGNATURE_HASH => {
+            let decoded = StakingPrecompile::EpochChanged::decode_log(&inner_log, true)?;
+            Ok(Some(StakingEvent::EpochChanged(EpochChangedEvent {
+                old_epoch: BigDecimal::from(decoded.oldEpoch),
+                new_epoch: BigDecimal::from(decoded.newEpoch),
+                block_meta,
+                tx_meta,
+            })))
+        }
+        StakingPrecompile::ValidatorCreated::SIGNATURE_HASH => {
+            let decoded = StakingPrecompile::ValidatorCreated::decode_log(&inner_log, true)?;
+            Ok(Some(StakingEvent::ValidatorCreated(
+                ValidatorCreatedEvent {
+                    validator_id: BigDecimal::from(decoded.validatorId),
+                    auth_address: hex::encode(decoded.authAddress),
+                    commission: u256_to_bigdecimal(decoded.commission),
+                    block_meta,
+                    tx_meta,
+                },
+            )))
+        }
+        StakingPrecompile::ValidatorStatusChanged::SIGNATURE_HASH => {
+            let decoded = StakingPrecompile::ValidatorStatusChanged::decode_log(&inner_log, true)?;
+            Ok(Some(StakingEvent::ValidatorStatusChanged(
+                ValidatorStatusChangedEvent {
+                    validator_id: BigDecimal::from(decoded.validatorId),
+                    flags: BigDecimal::from(decoded.flags),
+                    block_meta,
+                    tx_meta,
+                },
+            )))
+        }
+        StakingPrecompile::CommissionChanged::SIGNATURE_HASH => {
+            let decoded = StakingPrecompile::CommissionChanged::decode_log(&inner_log, true)?;
+            Ok(Some(StakingEvent::CommissionChanged(
+                CommissionChangedEvent {
+                    validator_id: BigDecimal::from(decoded.validatorId),
+                    old_commission: u256_to_bigdecimal(decoded.oldCommission),
+                    new_commission: u256_to_bigdecimal(decoded.newCommission),
+                    block_meta,
+                    tx_meta,
+                },
+            )))
         }
         _ => Ok(None),
     }

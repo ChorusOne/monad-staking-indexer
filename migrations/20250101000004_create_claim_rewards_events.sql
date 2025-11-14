@@ -9,9 +9,8 @@ CREATE TABLE claim_rewards_events (
     block_timestamp BIGINT NOT NULL,
     transaction_hash VARCHAR(64) NOT NULL,
     transaction_index BIGINT NOT NULL,
-    log_index BIGINT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(transaction_hash, log_index)
+    UNIQUE(transaction_hash)
 );
 
 CREATE INDEX idx_claim_rewards_val_id ON claim_rewards_events(val_id);
