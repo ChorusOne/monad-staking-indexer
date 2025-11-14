@@ -113,13 +113,13 @@ pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
             let decoded = StakingPrecompile::Delegate::decode_log(&inner_log, true)?;
             Ok(Some(StakingEvent::Delegate(DelegateEvent {
                 val_id: BigDecimal::from(decoded.valId),
-                delegator: hex::encode(decoded.delegator.as_slice()),
+                delegator: hex::encode(decoded.delegator),
                 amount: u256_to_bigdecimal(decoded.amount),
                 activation_epoch: BigDecimal::from(decoded.activationEpoch),
                 block_number: BigDecimal::from(block_number),
-                block_hash: hex::encode(block_hash.as_slice()),
+                block_hash: hex::encode(block_hash),
                 block_timestamp: BigDecimal::from(block_timestamp),
-                transaction_hash: hex::encode(transaction_hash.as_slice()),
+                transaction_hash: hex::encode(transaction_hash),
                 transaction_index: BigDecimal::from(transaction_index),
                 log_index: BigDecimal::from(log_index),
             })))
@@ -128,14 +128,14 @@ pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
             let decoded = StakingPrecompile::Undelegate::decode_log(&inner_log, true)?;
             Ok(Some(StakingEvent::Undelegate(UndelegateEvent {
                 val_id: BigDecimal::from(decoded.valId),
-                delegator: hex::encode(decoded.delegator.as_slice()),
+                delegator: hex::encode(decoded.delegator),
                 withdrawal_id: decoded.withdrawal_id as i16,
                 amount: u256_to_bigdecimal(decoded.amount),
                 activation_epoch: BigDecimal::from(decoded.activationEpoch),
                 block_number: BigDecimal::from(block_number),
-                block_hash: hex::encode(block_hash.as_slice()),
+                block_hash: hex::encode(block_hash),
                 block_timestamp: BigDecimal::from(block_timestamp),
-                transaction_hash: hex::encode(transaction_hash.as_slice()),
+                transaction_hash: hex::encode(transaction_hash),
                 transaction_index: BigDecimal::from(transaction_index),
                 log_index: BigDecimal::from(log_index),
             })))
@@ -144,14 +144,14 @@ pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
             let decoded = StakingPrecompile::Withdraw::decode_log(&inner_log, true)?;
             Ok(Some(StakingEvent::Withdraw(WithdrawEvent {
                 val_id: BigDecimal::from(decoded.valId),
-                delegator: hex::encode(decoded.delegator.as_slice()),
+                delegator: hex::encode(decoded.delegator),
                 withdrawal_id: decoded.withdrawal_id as i16,
                 amount: u256_to_bigdecimal(decoded.amount),
                 activation_epoch: BigDecimal::from(decoded.activationEpoch),
                 block_number: BigDecimal::from(block_number),
-                block_hash: hex::encode(block_hash.as_slice()),
+                block_hash: hex::encode(block_hash),
                 block_timestamp: BigDecimal::from(block_timestamp),
-                transaction_hash: hex::encode(transaction_hash.as_slice()),
+                transaction_hash: hex::encode(transaction_hash),
                 transaction_index: BigDecimal::from(transaction_index),
                 log_index: BigDecimal::from(log_index),
             })))
@@ -160,13 +160,13 @@ pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
             let decoded = StakingPrecompile::ClaimRewards::decode_log(&inner_log, true)?;
             Ok(Some(StakingEvent::ClaimRewards(ClaimRewardsEvent {
                 val_id: BigDecimal::from(decoded.valId),
-                delegator: hex::encode(decoded.delegator.as_slice()),
+                delegator: hex::encode(decoded.delegator),
                 amount: u256_to_bigdecimal(decoded.amount),
                 epoch: BigDecimal::from(decoded.epoch),
                 block_number: BigDecimal::from(block_number),
-                block_hash: hex::encode(block_hash.as_slice()),
+                block_hash: hex::encode(block_hash),
                 block_timestamp: BigDecimal::from(block_timestamp),
-                transaction_hash: hex::encode(transaction_hash.as_slice()),
+                transaction_hash: hex::encode(transaction_hash),
                 transaction_index: BigDecimal::from(transaction_index),
                 log_index: BigDecimal::from(log_index),
             })))
