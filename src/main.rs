@@ -1,6 +1,7 @@
 mod contract_abi;
 mod db;
 mod events;
+mod metrics;
 
 use std::ops::Range;
 
@@ -12,11 +13,11 @@ use alloy::{
 };
 use eyre::Result;
 use futures_util::stream::StreamExt;
-use log::{error, info};
+use log::{error, info, log};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 
-use crate::events::StakingEvent;
+use crate::events::{StakingEvent, StakingEventType};
 
 fn chunk_range(range: Range<u64>, chunk_size: u64) -> Vec<Range<u64>> {
     let mut chunks = Vec::with_capacity(((range.end - range.start) / chunk_size) as usize);
@@ -63,22 +64,39 @@ async fn main() -> Result<()> {
     let (gap_tx, gap_rx) = mpsc::unbounded_channel();
 
     let (tx, rx) = mpsc::unbounded_channel();
+    let (metrics_tx, metrics_rx) = mpsc::unbounded_channel();
+    let (metrics_request_tx, metrics_request_rx) = mpsc::unbounded_channel();
     info!("Watching staking contract at: {}", staking_contract_address);
 
-    let pool_clone = pool.clone();
     tokio::spawn(async move {
-        if let Err(e) = process_event_logs(pool_clone, rx).await {
+        if let Err(e) = metrics::process_metrics(metrics_rx, metrics_request_rx).await {
+            error!("Metrics processing task failed: {}", e);
+        }
+    });
+
+    tokio::spawn(async move {
+        if let Err(e) = metrics::run_metrics_server(metrics_request_tx).await {
+            error!("Metrics server task failed: {}", e);
+        }
+    });
+
+    let pool_clone = pool.clone();
+    let event_metrics_tx = metrics_tx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = process_event_logs(pool_clone, rx, event_metrics_tx).await {
             error!("Event processing task failed: {}", e);
         }
     });
 
     let gaps_process_tx = tx.clone();
+    let gaps_metrics_tx = metrics_tx.clone();
     tokio::spawn(async move {
         if let Err(e) = process_gaps_task(
             gaps_provider,
             staking_contract_address,
             gaps_process_tx,
             gap_rx,
+            gaps_metrics_tx,
         )
         .await
         {
@@ -105,6 +123,7 @@ async fn process_gaps_task(
     staking_contract_address: Address,
     log_tx: mpsc::UnboundedSender<StakingEvent>,
     mut gap_rx: mpsc::UnboundedReceiver<Range<u64>>,
+    metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
 ) -> Result<()> {
     while let Some(range) = gap_rx.recv().await {
         let chunks = chunk_range(range.clone(), 100);
@@ -132,6 +151,7 @@ async fn process_gaps_task(
                 staking_contract_address,
                 chunk_range,
                 log_tx.clone(),
+                metrics_tx.clone(),
             )
             .await
             {
@@ -162,12 +182,27 @@ async fn process_gaps_task(
 async fn process_event_logs(
     pool: PgPool,
     mut rx: mpsc::UnboundedReceiver<StakingEvent>,
+    metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
 ) -> Result<()> {
     while let Some(event) = rx.recv().await {
-        if let Err(e) = db::repository::insert_staking_event(&pool, &event).await {
-            error!("Failed to insert event: {}", e);
-        } else {
-            info!("{} stored in database", event);
+        match db::repository::insert_staking_event(&pool, &event).await {
+            Ok(()) => {
+                let level = if event.event_type() == StakingEventType::ValidatorRewarded {
+                    log::Level::Debug
+                } else {
+                    log::Level::Info
+                };
+
+                log!(level, "{} stored in database", event);
+                let _ = metrics_tx.send(metrics::Metric::InsertedEvent(event.event_type()));
+            }
+            Err(db::repository::DbError::DuplicateEvent(event_type)) => {
+                info!("Duplicate event: {:?}", event_type);
+                let _ = metrics_tx.send(metrics::Metric::DuplicateEvent(event_type));
+            }
+            Err(e) => {
+                error!("Failed to insert event: {}", e);
+            }
         }
     }
     Ok(())
@@ -184,13 +219,14 @@ async fn process_live_blocks(
 
     info!("Starting live event stream from block {:?}", start_block);
     let mut stream = provider.subscribe_logs(&filter).await?.into_stream();
+    info!("Got liveblock stream");
 
     while let Some(log) = stream.next().await {
         match events::extract_event(&log) {
             Ok(Some(event)) => {
                 if let Some(start) = start_block {
                     let end = event.block_meta().block_number;
-                    gap_tx.send(start..end - 1).unwrap();
+                    gap_tx.send(start..end).unwrap();
                     start_block = None;
                 }
                 tx.send(event).expect("Channel closed");
@@ -210,13 +246,13 @@ async fn process_historical_blocks(
     staking_contract_address: Address,
     range: &Range<u64>,
     tx: mpsc::UnboundedSender<StakingEvent>,
+    metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
 ) -> Result<()> {
     let filter = Filter::new()
         .address(staking_contract_address)
         .from_block(range.start)
-        .to_block(range.end);
+        .to_block(range.end.saturating_sub(1));
 
-    info!("Processing block range: {range:?}");
     let logs = provider.get_logs(&filter).await?;
 
     for log in logs {
@@ -229,6 +265,8 @@ async fn process_historical_blocks(
         }
     }
 
-    info!("Completed processing range {range:?}");
+    let blocks_processed = range.end - range.start;
+    let _ = metrics_tx.send(metrics::Metric::BackfilledBlocks(blocks_processed));
+
     Ok(())
 }

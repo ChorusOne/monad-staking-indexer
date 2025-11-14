@@ -1,12 +1,20 @@
 use std::ops::Range;
 
-use eyre::Result;
 use log::info;
 use sqlx::PgPool;
+use thiserror::Error;
 
-use crate::events::{self, BlockMeta};
+use crate::events::{self, BlockMeta, StakingEventType};
 
-pub async fn ensure_block(pool: &PgPool, block_meta: &BlockMeta) -> Result<()> {
+#[derive(Debug, Error)]
+pub enum DbError {
+    #[error("Database error: {0}")]
+    Sqlx(#[from] sqlx::Error),
+    #[error("Duplicate event")]
+    DuplicateEvent(StakingEventType),
+}
+
+pub async fn ensure_block(pool: &PgPool, block_meta: &BlockMeta) -> Result<(), DbError> {
     sqlx::query(
         r#"
         INSERT INTO blocks (block_number, block_hash, block_timestamp)
@@ -23,7 +31,7 @@ pub async fn ensure_block(pool: &PgPool, block_meta: &BlockMeta) -> Result<()> {
     Ok(())
 }
 
-pub async fn get_max_block_number(pool: &PgPool) -> Result<Option<i64>> {
+pub async fn get_max_block_number(pool: &PgPool) -> Result<Option<i64>, DbError> {
     let row = sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(block_number) FROM blocks")
         .fetch_one(pool)
         .await?;
@@ -31,7 +39,7 @@ pub async fn get_max_block_number(pool: &PgPool) -> Result<Option<i64>> {
     Ok(row)
 }
 
-pub async fn get_block_gaps(pool: &PgPool) -> Result<Vec<Range<u64>>> {
+pub async fn get_block_gaps(pool: &PgPool) -> Result<Vec<Range<u64>>, DbError> {
     let rows = sqlx::query_as::<_, (i64, i64)>(
         r#"
         WITH gaps AS (
@@ -52,12 +60,15 @@ pub async fn get_block_gaps(pool: &PgPool) -> Result<Vec<Range<u64>>> {
         .iter()
         .map(|r| Range {
             start: u64::try_from(r.0).unwrap(),
-            end: u64::try_from(r.1).unwrap(),
+            end: u64::try_from(r.1).unwrap() + 1, // +1 because Range is exclusive end
         })
         .collect())
 }
 
-pub async fn insert_delegate_event(pool: &PgPool, event: &events::DelegateEvent) -> Result<()> {
+pub async fn insert_delegate_event(
+    pool: &PgPool,
+    event: &events::DelegateEvent,
+) -> Result<(), DbError> {
     let result = sqlx::query(
         r#"
         INSERT INTO delegate_events (
@@ -79,12 +90,16 @@ pub async fn insert_delegate_event(pool: &PgPool, event: &events::DelegateEvent)
 
     if result.rows_affected() == 0 {
         info!("Delegate event already exists in database (duplicate)");
+        return Err(DbError::DuplicateEvent(StakingEventType::Delegate));
     }
 
     Ok(())
 }
 
-pub async fn insert_undelegate_event(pool: &PgPool, event: &events::UndelegateEvent) -> Result<()> {
+pub async fn insert_undelegate_event(
+    pool: &PgPool,
+    event: &events::UndelegateEvent,
+) -> Result<(), DbError> {
     let result = sqlx::query(
         r#"
         INSERT INTO undelegate_events (
@@ -107,12 +122,16 @@ pub async fn insert_undelegate_event(pool: &PgPool, event: &events::UndelegateEv
 
     if result.rows_affected() == 0 {
         info!("Undelegate event already exists in database (duplicate)");
+        return Err(DbError::DuplicateEvent(StakingEventType::Undelegate));
     }
 
     Ok(())
 }
 
-pub async fn insert_withdraw_event(pool: &PgPool, event: &events::WithdrawEvent) -> Result<()> {
+pub async fn insert_withdraw_event(
+    pool: &PgPool,
+    event: &events::WithdrawEvent,
+) -> Result<(), DbError> {
     let result = sqlx::query(
         r#"
         INSERT INTO withdraw_events (
@@ -135,6 +154,7 @@ pub async fn insert_withdraw_event(pool: &PgPool, event: &events::WithdrawEvent)
 
     if result.rows_affected() == 0 {
         info!("Withdraw event already exists in database (duplicate)");
+        return Err(DbError::DuplicateEvent(StakingEventType::Withdraw));
     }
 
     Ok(())
@@ -143,7 +163,7 @@ pub async fn insert_withdraw_event(pool: &PgPool, event: &events::WithdrawEvent)
 pub async fn insert_claim_rewards_event(
     pool: &PgPool,
     event: &events::ClaimRewardsEvent,
-) -> Result<()> {
+) -> Result<(), DbError> {
     let result = sqlx::query(
         r#"
         INSERT INTO claim_rewards_events (
@@ -165,6 +185,7 @@ pub async fn insert_claim_rewards_event(
 
     if result.rows_affected() == 0 {
         info!("ClaimRewards event already exists in database (duplicate)");
+        return Err(DbError::DuplicateEvent(StakingEventType::ClaimRewards));
     }
 
     Ok(())
@@ -173,7 +194,7 @@ pub async fn insert_claim_rewards_event(
 pub async fn insert_validator_rewarded_event(
     pool: &PgPool,
     event: &events::ValidatorRewardedEvent,
-) -> Result<()> {
+) -> Result<(), DbError> {
     let result = sqlx::query(
         r#"
         INSERT INTO validator_rewarded_events (
@@ -194,7 +215,8 @@ pub async fn insert_validator_rewarded_event(
     .await?;
 
     if result.rows_affected() == 0 {
-        info!("ValidatorRewarded event already exists in database (duplicate)");
+        info!("ValidatorRewarded event already exists in database (duplicate) {event}");
+        return Err(DbError::DuplicateEvent(StakingEventType::ValidatorRewarded));
     }
 
     Ok(())
@@ -203,7 +225,7 @@ pub async fn insert_validator_rewarded_event(
 pub async fn insert_epoch_changed_event(
     pool: &PgPool,
     event: &events::EpochChangedEvent,
-) -> Result<()> {
+) -> Result<(), DbError> {
     let result = sqlx::query(
         r#"
         INSERT INTO epoch_changed_events (
@@ -223,6 +245,7 @@ pub async fn insert_epoch_changed_event(
 
     if result.rows_affected() == 0 {
         info!("EpochChanged event already exists in database (duplicate)");
+        return Err(DbError::DuplicateEvent(StakingEventType::EpochChanged));
     }
 
     Ok(())
@@ -231,7 +254,7 @@ pub async fn insert_epoch_changed_event(
 pub async fn insert_validator_created_event(
     pool: &PgPool,
     event: &events::ValidatorCreatedEvent,
-) -> Result<()> {
+) -> Result<(), DbError> {
     let result = sqlx::query(
         r#"
         INSERT INTO validator_created_events (
@@ -252,6 +275,7 @@ pub async fn insert_validator_created_event(
 
     if result.rows_affected() == 0 {
         info!("ValidatorCreated event already exists in database (duplicate)");
+        return Err(DbError::DuplicateEvent(StakingEventType::ValidatorCreated));
     }
 
     Ok(())
@@ -260,7 +284,7 @@ pub async fn insert_validator_created_event(
 pub async fn insert_validator_status_changed_event(
     pool: &PgPool,
     event: &events::ValidatorStatusChangedEvent,
-) -> Result<()> {
+) -> Result<(), DbError> {
     let result = sqlx::query(
         r#"
         INSERT INTO validator_status_changed_events (
@@ -280,6 +304,9 @@ pub async fn insert_validator_status_changed_event(
 
     if result.rows_affected() == 0 {
         info!("ValidatorStatusChanged event already exists in database (duplicate)");
+        return Err(DbError::DuplicateEvent(
+            StakingEventType::ValidatorStatusChanged,
+        ));
     }
 
     Ok(())
@@ -288,7 +315,7 @@ pub async fn insert_validator_status_changed_event(
 pub async fn insert_commission_changed_event(
     pool: &PgPool,
     event: &events::CommissionChangedEvent,
-) -> Result<()> {
+) -> Result<(), DbError> {
     let result = sqlx::query(
         r#"
         INSERT INTO commission_changed_events (
@@ -309,12 +336,16 @@ pub async fn insert_commission_changed_event(
 
     if result.rows_affected() == 0 {
         info!("CommissionChanged event already exists in database (duplicate)");
+        return Err(DbError::DuplicateEvent(StakingEventType::CommissionChanged));
     }
 
     Ok(())
 }
 
-pub async fn insert_staking_event(pool: &PgPool, event: &events::StakingEvent) -> Result<()> {
+pub async fn insert_staking_event(
+    pool: &PgPool,
+    event: &events::StakingEvent,
+) -> Result<(), DbError> {
     let result = match event {
         events::StakingEvent::Delegate(e) => insert_delegate_event(pool, e).await,
         events::StakingEvent::Undelegate(e) => insert_undelegate_event(pool, e).await,
@@ -333,11 +364,7 @@ pub async fn insert_staking_event(pool: &PgPool, event: &events::StakingEvent) -
         }
     };
 
-    result?;
-
-    // only create the block data _after_ successfully inserting an event
-    // to prevent having an empty block
     ensure_block(pool, event.block_meta()).await?;
 
-    Ok(())
+    result
 }
