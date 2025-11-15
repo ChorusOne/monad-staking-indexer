@@ -7,7 +7,7 @@ CREATE TABLE commission_changed_events (
     transaction_hash VARCHAR(64) NOT NULL,
     transaction_index BIGINT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(transaction_hash)
+    UNIQUE(validator_id, transaction_hash)
 );
 
 CREATE INDEX idx_commission_changed_validator_id ON commission_changed_events(validator_id);

@@ -127,56 +127,49 @@ async fn process_gaps_task(
 ) -> Result<()> {
     while let Some(range) = gap_rx.recv().await {
         let chunks = chunk_range(range.clone(), 100);
-        let total_blocks = range.end - range.start;
-
-        info!(
-            "Processing gap: blocks {} to {} ({} blocks in {} chunks)",
-            range.start,
-            range.end,
-            total_blocks,
-            chunks.len()
-        );
-
-        for (chunk_idx, chunk_range) in chunks.iter().enumerate() {
+        if chunks.len() > 1 {
             info!(
-                "Processing chunk {}/{}: blocks {} to {}",
-                chunk_idx + 1,
-                chunks.len(),
-                chunk_range.start,
-                chunk_range.end - 1
+                "Backfilling large range: {:?} ({} blocks) in {} chunks",
+                range,
+                range.end - range.start,
+                chunks.len()
             );
+        }
 
-            if let Err(e) = process_historical_blocks(
+        for chunk_range in chunks.iter() {
+            info!("Backfilling chunk: blocks {:?}", chunk_range);
+
+            let res = process_historical_blocks(
                 &provider,
                 staking_contract_address,
                 chunk_range,
                 log_tx.clone(),
                 metrics_tx.clone(),
             )
-            .await
-            {
-                error!(
-                    "Chunk backfill failed for blocks {} to {}: {}",
-                    chunk_range.start,
-                    chunk_range.end - 1,
-                    e
-                );
-            } else {
-                info!(
-                    "Chunk backfill completed for blocks {} to {}",
-                    chunk_range.start,
-                    chunk_range.end - 1
-                );
-            }
-        }
+            .await;
 
+            log!(
+                log_level_res(&res),
+                "Chunk backfill completed for blocks {} to {}: {:?}",
+                chunk_range.start,
+                chunk_range.end - 1,
+                res
+            );
+        }
         info!(
-            "Gap backfill fully completed for blocks {} to {}",
-            range.start,
-            range.end - 1
+            "Finished backfilling range: {range:?} ({} blocks)",
+            range.end - range.start
         );
     }
     Ok(())
+}
+
+fn log_level_res<T, E>(r: &Result<T, E>) -> log::Level {
+    if r.is_err() {
+        log::Level::Error
+    } else {
+        log::Level::Debug
+    }
 }
 
 async fn process_event_logs(
@@ -196,8 +189,15 @@ async fn process_event_logs(
                 log!(level, "{} stored in database", event);
                 let _ = metrics_tx.send(metrics::Metric::InsertedEvent(event.event_type()));
             }
-            Err(db::repository::DbError::DuplicateEvent(event_type)) => {
-                info!("Duplicate event: {:?}", event_type);
+            Err(db::repository::DbError::DuplicateEvent {
+                event_type,
+                block_meta,
+                tx_meta,
+            }) => {
+                info!(
+                    "Duplicate event: {:?} at block {} with tx {:?}",
+                    event_type, block_meta.block_number, tx_meta
+                );
                 let _ = metrics_tx.send(metrics::Metric::DuplicateEvent(event_type));
             }
             Err(e) => {
