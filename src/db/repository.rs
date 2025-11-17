@@ -1,17 +1,20 @@
 use std::ops::Range;
 
-use log::info;
 use sqlx::PgPool;
 use thiserror::Error;
 
-use crate::events::{self, BlockMeta, StakingEventType};
+use crate::events::{self, BlockMeta, StakingEventType, TxMeta};
 
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error("Database error: {0}")]
     Sqlx(#[from] sqlx::Error),
-    #[error("Duplicate event")]
-    DuplicateEvent(StakingEventType),
+    #[error("Duplicate event: {event_type} at block {} tx {}", block_meta.block_number, tx_meta.transaction_hash)]
+    DuplicateEvent {
+        event_type: StakingEventType,
+        block_meta: BlockMeta,
+        tx_meta: TxMeta,
+    },
 }
 
 pub async fn ensure_block(pool: &PgPool, block_meta: &BlockMeta) -> Result<(), DbError> {
@@ -75,7 +78,7 @@ pub async fn insert_delegate_event(
             val_id, delegator, amount, activation_epoch,
             block_number, transaction_hash, transaction_index
         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ON CONFLICT (transaction_hash) DO NOTHING
+        ON CONFLICT (val_id, transaction_hash) DO NOTHING
         "#,
     )
     .bind(event.val_id as i64)
@@ -89,8 +92,11 @@ pub async fn insert_delegate_event(
     .await?;
 
     if result.rows_affected() == 0 {
-        info!("Delegate event already exists in database (duplicate)");
-        return Err(DbError::DuplicateEvent(StakingEventType::Delegate));
+        return Err(DbError::DuplicateEvent {
+            event_type: StakingEventType::Delegate,
+            block_meta: event.block_meta.clone(),
+            tx_meta: event.tx_meta.clone(),
+        });
     }
 
     Ok(())
@@ -106,7 +112,7 @@ pub async fn insert_undelegate_event(
             val_id, delegator, withdrawal_id, amount, activation_epoch,
             block_number, transaction_hash, transaction_index
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (transaction_hash) DO NOTHING
+        ON CONFLICT (val_id, transaction_hash) DO NOTHING
         "#,
     )
     .bind(event.val_id as i64)
@@ -121,8 +127,11 @@ pub async fn insert_undelegate_event(
     .await?;
 
     if result.rows_affected() == 0 {
-        info!("Undelegate event already exists in database (duplicate)");
-        return Err(DbError::DuplicateEvent(StakingEventType::Undelegate));
+        return Err(DbError::DuplicateEvent {
+            event_type: StakingEventType::Undelegate,
+            block_meta: event.block_meta.clone(),
+            tx_meta: event.tx_meta.clone(),
+        });
     }
 
     Ok(())
@@ -138,7 +147,7 @@ pub async fn insert_withdraw_event(
             val_id, delegator, withdrawal_id, amount, activation_epoch,
             block_number, transaction_hash, transaction_index
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (transaction_hash) DO NOTHING
+        ON CONFLICT (val_id, transaction_hash) DO NOTHING
         "#,
     )
     .bind(event.val_id as i64)
@@ -153,8 +162,11 @@ pub async fn insert_withdraw_event(
     .await?;
 
     if result.rows_affected() == 0 {
-        info!("Withdraw event already exists in database (duplicate)");
-        return Err(DbError::DuplicateEvent(StakingEventType::Withdraw));
+        return Err(DbError::DuplicateEvent {
+            event_type: StakingEventType::Withdraw,
+            block_meta: event.block_meta.clone(),
+            tx_meta: event.tx_meta.clone(),
+        });
     }
 
     Ok(())
@@ -170,7 +182,7 @@ pub async fn insert_claim_rewards_event(
             val_id, delegator, amount, epoch,
             block_number, transaction_hash, transaction_index
         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ON CONFLICT (transaction_hash) DO NOTHING
+        ON CONFLICT (val_id, transaction_hash) DO NOTHING
         "#,
     )
     .bind(event.val_id as i64)
@@ -184,8 +196,11 @@ pub async fn insert_claim_rewards_event(
     .await?;
 
     if result.rows_affected() == 0 {
-        info!("ClaimRewards event already exists in database (duplicate)");
-        return Err(DbError::DuplicateEvent(StakingEventType::ClaimRewards));
+        return Err(DbError::DuplicateEvent {
+            event_type: StakingEventType::ClaimRewards,
+            block_meta: event.block_meta.clone(),
+            tx_meta: event.tx_meta.clone(),
+        });
     }
 
     Ok(())
@@ -215,8 +230,11 @@ pub async fn insert_validator_rewarded_event(
     .await?;
 
     if result.rows_affected() == 0 {
-        info!("ValidatorRewarded event already exists in database (duplicate) {event}");
-        return Err(DbError::DuplicateEvent(StakingEventType::ValidatorRewarded));
+        return Err(DbError::DuplicateEvent {
+            event_type: StakingEventType::ValidatorRewarded,
+            block_meta: event.block_meta.clone(),
+            tx_meta: event.tx_meta.clone(),
+        });
     }
 
     Ok(())
@@ -244,8 +262,11 @@ pub async fn insert_epoch_changed_event(
     .await?;
 
     if result.rows_affected() == 0 {
-        info!("EpochChanged event already exists in database (duplicate)");
-        return Err(DbError::DuplicateEvent(StakingEventType::EpochChanged));
+        return Err(DbError::DuplicateEvent {
+            event_type: StakingEventType::EpochChanged,
+            block_meta: event.block_meta.clone(),
+            tx_meta: event.tx_meta.clone(),
+        });
     }
 
     Ok(())
@@ -274,8 +295,11 @@ pub async fn insert_validator_created_event(
     .await?;
 
     if result.rows_affected() == 0 {
-        info!("ValidatorCreated event already exists in database (duplicate)");
-        return Err(DbError::DuplicateEvent(StakingEventType::ValidatorCreated));
+        return Err(DbError::DuplicateEvent {
+            event_type: StakingEventType::ValidatorCreated,
+            block_meta: event.block_meta.clone(),
+            tx_meta: event.tx_meta.clone(),
+        });
     }
 
     Ok(())
@@ -291,7 +315,7 @@ pub async fn insert_validator_status_changed_event(
             validator_id, flags,
             block_number, transaction_hash, transaction_index
         ) VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (transaction_hash) DO NOTHING
+        ON CONFLICT (validator_id, transaction_hash) DO NOTHING
         "#,
     )
     .bind(event.validator_id as i64)
@@ -303,10 +327,11 @@ pub async fn insert_validator_status_changed_event(
     .await?;
 
     if result.rows_affected() == 0 {
-        info!("ValidatorStatusChanged event already exists in database (duplicate)");
-        return Err(DbError::DuplicateEvent(
-            StakingEventType::ValidatorStatusChanged,
-        ));
+        return Err(DbError::DuplicateEvent {
+            event_type: StakingEventType::ValidatorStatusChanged,
+            block_meta: event.block_meta.clone(),
+            tx_meta: event.tx_meta.clone(),
+        });
     }
 
     Ok(())
@@ -322,7 +347,7 @@ pub async fn insert_commission_changed_event(
             validator_id, old_commission, new_commission,
             block_number, transaction_hash, transaction_index
         ) VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (transaction_hash) DO NOTHING
+        ON CONFLICT (validator_id, transaction_hash) DO NOTHING
         "#,
     )
     .bind(event.validator_id as i64)
@@ -335,8 +360,11 @@ pub async fn insert_commission_changed_event(
     .await?;
 
     if result.rows_affected() == 0 {
-        info!("CommissionChanged event already exists in database (duplicate)");
-        return Err(DbError::DuplicateEvent(StakingEventType::CommissionChanged));
+        return Err(DbError::DuplicateEvent {
+            event_type: StakingEventType::CommissionChanged,
+            block_meta: event.block_meta.clone(),
+            tx_meta: event.tx_meta.clone(),
+        });
     }
 
     Ok(())
