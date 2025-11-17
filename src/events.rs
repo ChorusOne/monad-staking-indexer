@@ -199,6 +199,19 @@ impl fmt::Display for CommissionChangedEvent {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StakingEventType {
+    Delegate,
+    Undelegate,
+    Withdraw,
+    ClaimRewards,
+    ValidatorRewarded,
+    EpochChanged,
+    ValidatorCreated,
+    ValidatorStatusChanged,
+    CommissionChanged,
+}
+
 #[derive(Debug, Clone)]
 pub enum StakingEvent {
     Delegate(DelegateEvent),
@@ -228,7 +241,53 @@ impl fmt::Display for StakingEvent {
     }
 }
 
+impl fmt::Display for StakingEventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StakingEventType::Delegate => write!(f, "Delegate"),
+            StakingEventType::Undelegate => write!(f, "Undelegate"),
+            StakingEventType::Withdraw => write!(f, "Withdraw"),
+            StakingEventType::ClaimRewards => write!(f, "ClaimRewards"),
+            StakingEventType::ValidatorRewarded => write!(f, "ValidatorRewarded"),
+            StakingEventType::EpochChanged => write!(f, "EpochChanged"),
+            StakingEventType::ValidatorCreated => write!(f, "ValidatorCreated"),
+            StakingEventType::ValidatorStatusChanged => write!(f, "ValidatorStatusChanged"),
+            StakingEventType::CommissionChanged => write!(f, "CommissionChanged"),
+        }
+    }
+}
+
+impl StakingEventType {
+    pub fn all_types() -> Vec<StakingEventType> {
+        vec![
+            StakingEventType::Delegate,
+            StakingEventType::Undelegate,
+            StakingEventType::Withdraw,
+            StakingEventType::ClaimRewards,
+            StakingEventType::ValidatorRewarded,
+            StakingEventType::EpochChanged,
+            StakingEventType::ValidatorCreated,
+            StakingEventType::ValidatorStatusChanged,
+            StakingEventType::CommissionChanged,
+        ]
+    }
+}
+
 impl StakingEvent {
+    pub fn event_type(&self) -> StakingEventType {
+        match self {
+            StakingEvent::Delegate(_) => StakingEventType::Delegate,
+            StakingEvent::Undelegate(_) => StakingEventType::Undelegate,
+            StakingEvent::Withdraw(_) => StakingEventType::Withdraw,
+            StakingEvent::ClaimRewards(_) => StakingEventType::ClaimRewards,
+            StakingEvent::ValidatorRewarded(_) => StakingEventType::ValidatorRewarded,
+            StakingEvent::EpochChanged(_) => StakingEventType::EpochChanged,
+            StakingEvent::ValidatorCreated(_) => StakingEventType::ValidatorCreated,
+            StakingEvent::ValidatorStatusChanged(_) => StakingEventType::ValidatorStatusChanged,
+            StakingEvent::CommissionChanged(_) => StakingEventType::CommissionChanged,
+        }
+    }
+
     pub fn block_meta(&self) -> &BlockMeta {
         match self {
             StakingEvent::Delegate(e) => &e.block_meta,
