@@ -1,7 +1,4 @@
-mod contract_abi;
-mod db;
-mod events;
-mod metrics;
+use monad_staking_indexer::{chunk_range, db, events, metrics, process_event_logs};
 
 use std::ops::Range;
 
@@ -14,23 +11,9 @@ use alloy::{
 use eyre::Result;
 use futures_util::stream::StreamExt;
 use log::{error, info, log};
-use sqlx::PgPool;
 use tokio::sync::mpsc;
 
-use crate::events::{StakingEvent, StakingEventType};
-
-fn chunk_range(range: Range<u64>, chunk_size: u64) -> Vec<Range<u64>> {
-    let mut chunks = Vec::with_capacity(((range.end - range.start) / chunk_size) as usize);
-    let mut chunk_start = range.start;
-
-    while chunk_start < range.end {
-        let chunk_end = std::cmp::min(chunk_start + chunk_size, range.end);
-        chunks.push(chunk_start..chunk_end);
-        chunk_start = chunk_end;
-    }
-
-    chunks
-}
+use events::StakingEvent;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -80,10 +63,9 @@ async fn main() -> Result<()> {
         }
     });
 
-    let pool_clone = pool.clone();
     let event_metrics_tx = metrics_tx.clone();
     tokio::spawn(async move {
-        if let Err(e) = process_event_logs(pool_clone, rx, event_metrics_tx).await {
+        if let Err(e) = process_event_logs(pool, rx, event_metrics_tx).await {
             error!("Event processing task failed: {}", e);
         }
     });
@@ -105,13 +87,16 @@ async fn main() -> Result<()> {
     });
 
     for range in gaps {
-        gap_tx.send(range).ok();
+        gap_tx.send(range).unwrap();
     }
 
     process_live_blocks(
         &live_provider,
         staking_contract_address,
-        max_block_on_startup.map(|b| b as u64 + 1),
+        // Intentionally start on the last block we processed,
+        // in case the program was interrupted half way through
+        // the block
+        max_block_on_startup,
         tx,
         gap_tx,
     )
@@ -170,42 +155,6 @@ fn log_level_res<T, E>(r: &Result<T, E>) -> log::Level {
     } else {
         log::Level::Debug
     }
-}
-
-async fn process_event_logs(
-    pool: PgPool,
-    mut rx: mpsc::UnboundedReceiver<StakingEvent>,
-    metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
-) -> Result<()> {
-    while let Some(event) = rx.recv().await {
-        match db::repository::insert_staking_event(&pool, &event).await {
-            Ok(()) => {
-                let level = if event.event_type() == StakingEventType::ValidatorRewarded {
-                    log::Level::Debug
-                } else {
-                    log::Level::Info
-                };
-
-                log!(level, "{} stored in database", event);
-                let _ = metrics_tx.send(metrics::Metric::InsertedEvent(event.event_type()));
-            }
-            Err(db::repository::DbError::DuplicateEvent {
-                event_type,
-                block_meta,
-                tx_meta,
-            }) => {
-                info!(
-                    "Duplicate event: {:?} at block {} with tx {:?}",
-                    event_type, block_meta.block_number, tx_meta
-                );
-                let _ = metrics_tx.send(metrics::Metric::DuplicateEvent(event_type));
-            }
-            Err(e) => {
-                error!("Failed to insert event: {}", e);
-            }
-        }
-    }
-    Ok(())
 }
 
 async fn process_live_blocks(
