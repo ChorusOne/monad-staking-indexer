@@ -1,3 +1,4 @@
+pub mod config;
 pub mod contract_abi;
 pub mod db;
 pub mod error;
@@ -6,6 +7,11 @@ pub mod metrics;
 pub mod pg_utils;
 
 pub mod test_utils;
+
+use alloy::primitives::Address;
+
+pub const STAKING_CONTRACT_ADDRESS: Address =
+    alloy::primitives::address!("0000000000000000000000000000000000001000");
 
 use std::ops::Range;
 

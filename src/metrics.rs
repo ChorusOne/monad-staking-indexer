@@ -127,15 +127,15 @@ async fn metrics_handler(
         .into_response()
 }
 
-pub async fn run_metrics_server(request_tx: mpsc::UnboundedSender<MetricsRequest>) -> Result<()> {
+pub async fn run_metrics_server(request_tx: mpsc::UnboundedSender<MetricsRequest>, bind_addr: &str) -> Result<()> {
     use axum::{Router, routing::get};
 
     let app = Router::new()
         .route("/metrics", get(metrics_handler))
         .layer(tower::ServiceBuilder::new().layer(axum::Extension(request_tx)));
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:9090").await?;
-    info!("Metrics server listening on http://0.0.0.0:9090");
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+    info!("Metrics server listening on http://{}", bind_addr);
 
     axum::serve(listener, app).await?;
     Ok(())

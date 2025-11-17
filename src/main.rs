@@ -1,4 +1,6 @@
-use monad_staking_indexer::{chunk_range, db, events, metrics, process_event_logs};
+use monad_staking_indexer::{
+    STAKING_CONTRACT_ADDRESS, chunk_range, config::Config, db, events, metrics, process_event_logs,
+};
 
 use std::ops::Range;
 
@@ -13,44 +15,41 @@ use futures_util::stream::StreamExt;
 use log::{error, info, log};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 
 use events::StakingEvent;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let config = Config::load().expect("Failed to load configuration");
+
     env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(config.parse_log_level())
         .format_target(false)
         .init();
 
     info!("Starting Monad Staking Indexer...");
 
-    let rpc_url = std::env::var("RPC_URL").expect("Missing RPC_URL env var");
-    let database_url = std::env::var("DATABASE_URL").expect("Missing DATABASE_URL env var");
-
     info!("Connecting to database...");
-    let pool = db::create_pool(&database_url).await?;
+    let pool = db::create_pool(&config.database_url).await?;
     info!("Database connected");
-
-    let staking_contract_address: Address = "0x0000000000000000000000000000000000001000".parse()?;
 
     info!("Getting current indexing state...");
     let max_block_on_startup = db::repository::get_max_block_number(&pool).await?;
     info!("Max block at startup {max_block_on_startup:?}");
 
     info!("Creating RPC connections...");
-    let ws_live = WsConnect::new(&rpc_url);
+    let ws_live = WsConnect::new(&config.rpc_url);
     let live_provider = ProviderBuilder::new().on_ws(ws_live).await?;
 
-    let ws_gaps = WsConnect::new(&rpc_url);
+    let ws_gaps = WsConnect::new(&config.rpc_url);
     let gaps_provider = ProviderBuilder::new().on_ws(ws_gaps).await?;
     let (gap_tx, gap_rx) = mpsc::unbounded_channel();
 
     let (tx, rx) = mpsc::unbounded_channel();
     let (metrics_tx, metrics_rx) = mpsc::unbounded_channel();
     let (metrics_request_tx, metrics_request_rx) = mpsc::unbounded_channel();
-    info!("Watching staking contract at: {}", staking_contract_address);
+    info!("Watching staking contract at: {}", STAKING_CONTRACT_ADDRESS);
 
     tokio::spawn(async move {
         if let Err(e) = metrics::process_metrics(metrics_rx, metrics_request_rx).await {
@@ -58,8 +57,9 @@ async fn main() -> Result<()> {
         }
     });
 
+    let metrics_bind_addr = config.metrics_bind_addr();
     tokio::spawn(async move {
-        if let Err(e) = metrics::run_metrics_server(metrics_request_tx).await {
+        if let Err(e) = metrics::run_metrics_server(metrics_request_tx, &metrics_bind_addr).await {
             error!("Metrics server task failed: {}", e);
         }
     });
@@ -74,21 +74,26 @@ async fn main() -> Result<()> {
 
     let gap_check_pool = pool.clone();
     let gap_check_tx = gap_tx.clone();
+    let gap_check_interval = config.gap_check_interval_secs;
     tokio::spawn(async move {
-        if let Err(e) = periodic_gap_check_task(gap_check_pool, gap_check_tx).await {
+        if let Err(e) =
+            periodic_gap_check_task(gap_check_pool, gap_check_tx, gap_check_interval).await
+        {
             error!("Periodic gap check task failed: {}", e);
         }
     });
 
     let gaps_process_tx = tx.clone();
     let gaps_metrics_tx = metrics_tx.clone();
+    let backfill_chunk_size = config.backfill_chunk_size;
     tokio::spawn(async move {
         if let Err(e) = process_gaps_task(
             gaps_provider,
-            staking_contract_address,
+            STAKING_CONTRACT_ADDRESS,
             gaps_process_tx,
             gap_rx,
             gaps_metrics_tx,
+            backfill_chunk_size,
         )
         .await
         {
@@ -98,7 +103,7 @@ async fn main() -> Result<()> {
 
     process_live_blocks(
         &live_provider,
-        staking_contract_address,
+        STAKING_CONTRACT_ADDRESS,
         // Intentionally start on the last block we processed,
         // in case the program was interrupted half way through
         // the block
@@ -112,8 +117,9 @@ async fn main() -> Result<()> {
 async fn periodic_gap_check_task(
     pool: PgPool,
     gap_tx: mpsc::UnboundedSender<Range<u64>>,
+    interval_secs: u64,
 ) -> Result<()> {
-    let mut interval = interval(Duration::from_secs(300));
+    let mut interval = interval(Duration::from_secs(interval_secs));
     interval.tick().await;
 
     loop {
@@ -145,9 +151,10 @@ async fn process_gaps_task(
     log_tx: mpsc::UnboundedSender<StakingEvent>,
     mut gap_rx: mpsc::UnboundedReceiver<Range<u64>>,
     metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
+    chunk_size: u64,
 ) -> Result<()> {
     while let Some(range) = gap_rx.recv().await {
-        let chunks = chunk_range(range.clone(), 100);
+        let chunks = chunk_range(range.clone(), chunk_size);
         if chunks.len() > 1 {
             info!(
                 "Backfilling large range: {:?} ({} blocks) in {} chunks",
