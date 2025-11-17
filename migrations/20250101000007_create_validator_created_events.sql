@@ -4,8 +4,6 @@ CREATE TABLE validator_created_events (
     auth_address VARCHAR(40) NOT NULL,
     commission NUMERIC(78, 0) NOT NULL,
     block_number BIGINT NOT NULL,
-    block_hash VARCHAR(64) NOT NULL,
-    block_timestamp BIGINT NOT NULL,
     transaction_hash VARCHAR(64) NOT NULL,
     transaction_index BIGINT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
