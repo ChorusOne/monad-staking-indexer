@@ -2,6 +2,7 @@
 name = "monad-staking-indexer"
 version = "0.1.0"
 edition = "2024"
+license-file = "LICENSE"
 
 [dependencies]
 alloy = { version = "0.8", features = ["full"] }
