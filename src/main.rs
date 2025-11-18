@@ -12,7 +12,7 @@ use alloy::{
 };
 use eyre::Result;
 use futures_util::stream::StreamExt;
-use log::{error, info, log};
+use log::{error, info};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
@@ -166,23 +166,26 @@ async fn process_gaps_task(
 
         for chunk_range in chunks.iter() {
             info!("Backfilling chunk: blocks {:?}", chunk_range);
+            let blocks_processed = chunk_range.end - chunk_range.start;
 
             let res = process_historical_blocks(
                 &provider,
                 staking_contract_address,
                 chunk_range,
                 log_tx.clone(),
-                metrics_tx.clone(),
             )
             .await;
-
-            log!(
-                log_level_res(&res),
-                "Chunk backfill completed for blocks {} to {}: {:?}",
-                chunk_range.start,
-                chunk_range.end - 1,
-                res
-            );
+            let metric = match res {
+                Ok(()) => {
+                    info!("Successfully backfilled {chunk_range:?}");
+                    metrics::Metric::BackfilledBlocks(blocks_processed)
+                }
+                Err(e) => {
+                    error!("Failed to backfill {chunk_range:?}: {e:?}");
+                    metrics::Metric::FailedToBackfill(blocks_processed)
+                }
+            };
+            let _ = metrics_tx.send(metric);
         }
         info!(
             "Finished backfilling range: {range:?} ({} blocks)",
@@ -190,14 +193,6 @@ async fn process_gaps_task(
         );
     }
     Ok(())
-}
-
-fn log_level_res<T, E>(r: &Result<T, E>) -> log::Level {
-    if r.is_err() {
-        log::Level::Error
-    } else {
-        log::Level::Debug
-    }
 }
 
 async fn process_live_blocks(
@@ -238,7 +233,6 @@ async fn process_historical_blocks(
     staking_contract_address: Address,
     range: &Range<u64>,
     tx: mpsc::UnboundedSender<StakingEvent>,
-    metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
 ) -> Result<()> {
     let filter = Filter::new()
         .address(staking_contract_address)
@@ -248,17 +242,10 @@ async fn process_historical_blocks(
     let logs = provider.get_logs(&filter).await?;
 
     for log in logs {
-        match events::extract_event(&log) {
-            Ok(Some(event)) => tx.send(event).expect("Channel closed"),
-            Ok(None) => (),
-            Err(e) => {
-                error!("Error extracting event: {}", e);
-            }
+        if let Some(event) = events::extract_event(&log)? {
+            tx.send(event).expect("Channel closed");
         }
     }
-
-    let blocks_processed = range.end - range.start;
-    let _ = metrics_tx.send(metrics::Metric::BackfilledBlocks(blocks_processed));
 
     Ok(())
 }
