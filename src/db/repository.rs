@@ -34,12 +34,12 @@ pub async fn ensure_block(pool: &PgPool, block_meta: &BlockMeta) -> Result<(), D
     Ok(())
 }
 
-pub async fn get_max_block_number(pool: &PgPool) -> Result<Option<i64>, DbError> {
+pub async fn get_max_block_number(pool: &PgPool) -> Result<Option<u64>, DbError> {
     let row = sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(block_number) FROM blocks")
         .fetch_one(pool)
         .await?;
 
-    Ok(row)
+    Ok(row.map(|b| b as u64))
 }
 
 pub async fn get_block_gaps(pool: &PgPool) -> Result<Vec<Range<u64>>, DbError> {
@@ -391,8 +391,6 @@ pub async fn insert_staking_event(
             insert_commission_changed_event(pool, e).await
         }
     };
-
     ensure_block(pool, event.block_meta()).await?;
-
     result
 }

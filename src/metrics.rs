@@ -5,7 +5,7 @@ use log::info;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Metric {
     DuplicateEvent(StakingEventType),
     InsertedEvent(StakingEventType),
