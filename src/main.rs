@@ -11,7 +11,9 @@ use alloy::{
 use eyre::Result;
 use futures_util::stream::StreamExt;
 use log::{error, info, log};
+use sqlx::PgPool;
 use tokio::sync::mpsc;
+use tokio::time::{interval, Duration};
 
 use events::StakingEvent;
 
@@ -36,7 +38,6 @@ async fn main() -> Result<()> {
     info!("Getting current indexing state...");
     let max_block_on_startup = db::repository::get_max_block_number(&pool).await?;
     info!("Max block at startup {max_block_on_startup:?}");
-    let gaps = db::repository::get_block_gaps(&pool).await?;
 
     info!("Creating RPC connections...");
     let ws_live = WsConnect::new(&rpc_url);
@@ -64,9 +65,18 @@ async fn main() -> Result<()> {
     });
 
     let event_metrics_tx = metrics_tx.clone();
+    let event_pool = pool.clone();
     tokio::spawn(async move {
-        if let Err(e) = process_event_logs(pool, rx, event_metrics_tx).await {
+        if let Err(e) = process_event_logs(event_pool, rx, event_metrics_tx).await {
             error!("Event processing task failed: {}", e);
+        }
+    });
+
+    let gap_check_pool = pool.clone();
+    let gap_check_tx = gap_tx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = periodic_gap_check_task(gap_check_pool, gap_check_tx).await {
+            error!("Periodic gap check task failed: {}", e);
         }
     });
 
@@ -86,10 +96,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    for range in gaps {
-        gap_tx.send(range).unwrap();
-    }
-
     process_live_blocks(
         &live_provider,
         staking_contract_address,
@@ -101,6 +107,36 @@ async fn main() -> Result<()> {
         gap_tx,
     )
     .await
+}
+
+async fn periodic_gap_check_task(
+    pool: PgPool,
+    gap_tx: mpsc::UnboundedSender<Range<u64>>,
+) -> Result<()> {
+    let mut interval = interval(Duration::from_secs(300));
+    interval.tick().await;
+
+    loop {
+        info!("Running periodic gap check...");
+        match db::repository::get_block_gaps(&pool).await {
+            Ok(gaps) => {
+                if gaps.is_empty() {
+                    info!("No gaps detected");
+                } else {
+                    info!("Detected {} gap(s)", gaps.len());
+                    for range in gaps {
+                        info!("Queueing gap for backfill: {:?}", range);
+                        gap_tx.send(range)?;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to check for gaps: {}", e);
+            }
+        }
+
+        interval.tick().await;
+    }
 }
 
 async fn process_gaps_task(
