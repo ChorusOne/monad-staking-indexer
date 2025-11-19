@@ -64,7 +64,8 @@ pub async fn process_event_logs(
                 let _ = metrics_tx.send(metrics::Metric::DuplicateEvent(event_type));
             }
             Err(e) => {
-                error!("Failed to insert event: {}", e);
+                error!("Failed to insert event {event:?}: {e:?}");
+                let _ = metrics_tx.send(metrics::Metric::FailedToInsert);
             }
         }
     }

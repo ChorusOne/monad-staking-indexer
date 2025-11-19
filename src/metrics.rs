@@ -10,13 +10,17 @@ pub enum Metric {
     DuplicateEvent(StakingEventType),
     InsertedEvent(StakingEventType),
     BackfilledBlocks(u64),
+    FailedToBackfill(u64),
+    FailedToInsert,
 }
 
 #[derive(Debug, Clone)]
 struct MetricsState {
     inserted: HashMap<StakingEventType, u64>,
     duplicates: HashMap<StakingEventType, u64>,
-    backfilled_blocks: u64,
+    insert_events_err: u64,
+    backfilled_blocks_ok: u64,
+    backfilled_blocks_err: u64,
 }
 
 impl MetricsState {
@@ -24,7 +28,9 @@ impl MetricsState {
         Self {
             inserted: HashMap::new(),
             duplicates: HashMap::new(),
-            backfilled_blocks: 0,
+            backfilled_blocks_ok: 0,
+            backfilled_blocks_err: 0,
+            insert_events_err: 0,
         }
     }
 
@@ -37,7 +43,13 @@ impl MetricsState {
                 *self.duplicates.entry(event_type).or_insert(0) += 1;
             }
             Metric::BackfilledBlocks(count) => {
-                self.backfilled_blocks += count;
+                self.backfilled_blocks_ok += count;
+            }
+            Metric::FailedToBackfill(count) => {
+                self.backfilled_blocks_err += count;
+            }
+            Metric::FailedToInsert => {
+                self.insert_events_err += 1;
             }
         }
     }
@@ -65,12 +77,29 @@ impl MetricsState {
             ));
         }
 
-        output
-            .push_str("# HELP staking_backfilled_blocks_total Total number of blocks backfilled\n");
-        output.push_str("# TYPE staking_backfilled_blocks_total counter\n");
+        output.push_str("# HELP staking_backfilled_blocks_ok Number of blocks backfilled\n");
+        output.push_str("# TYPE staking_backfilled_blocks_ok counter\n");
         output.push_str(&format!(
-            "staking_backfilled_blocks_total {}\n",
-            self.backfilled_blocks
+            "staking_backfilled_blocks_ok {}\n",
+            self.backfilled_blocks_ok
+        ));
+
+        output.push_str(
+            "# HELP staking_backfilled_blocks_err Number of blocks that failed to backfill\n",
+        );
+        output.push_str("# TYPE staking_backfilled_blocks_err counter\n");
+        output.push_str(&format!(
+            "staking_backfilled_blocks_err {}\n",
+            self.backfilled_blocks_err
+        ));
+
+        output.push_str(
+            "# HELP staking_insert_events_err Number of events that failed to be inserted\n",
+        );
+        output.push_str("# TYPE staking_backfilled_blocks_err counter\n");
+        output.push_str(&format!(
+            "staking_insert_events_err {}\n",
+            self.insert_events_err
         ));
         output
     }
@@ -127,7 +156,10 @@ async fn metrics_handler(
         .into_response()
 }
 
-pub async fn run_metrics_server(request_tx: mpsc::UnboundedSender<MetricsRequest>, bind_addr: &str) -> Result<()> {
+pub async fn run_metrics_server(
+    request_tx: mpsc::UnboundedSender<MetricsRequest>,
+    bind_addr: &str,
+) -> Result<()> {
     use axum::{Router, routing::get};
 
     let app = Router::new()
