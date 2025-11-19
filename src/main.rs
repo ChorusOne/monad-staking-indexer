@@ -29,7 +29,11 @@ async fn main() -> Result<()> {
     info!("Starting Monad Staking Indexer...");
 
     info!("Connecting to database...");
-    let pool = db::create_pool(&config.database_url).await?;
+    let database_url = config
+        .connection_string()
+        .await
+        .expect("Failed to build database connection string");
+    let pool = db::create_pool(&database_url).await?;
     info!("Database connected");
 
     info!("Getting current indexing state...");

@@ -1,15 +1,41 @@
 use config::{Config as ConfigBuilder, ConfigError, Environment, File};
 use serde::Deserialize;
 use std::path::Path;
+use tokio::fs;
+use vaultrs::client::{VaultClient, VaultClientSettingsBuilder};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub rpc_url: String,
-    pub database_url: String,
+    pub db_host: String,
+    pub db_port: u16,
+    pub db_name: String,
+    #[serde(flatten)]
+    pub db_auth: DbAuth,
     pub backfill_chunk_size: u64,
     pub gap_check_interval_secs: u64,
     pub metrics: MetricsConfig,
     pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DbCredentials {
+    user: String,
+    password: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct VaultConfig {
+    address: String,
+    token_path: String,
+    db_secret_path: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum DbAuth {
+    Direct { db_credentials: DbCredentials },
+    Vault { vault: VaultConfig },
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -62,5 +88,35 @@ impl Config {
 
     pub fn metrics_bind_addr(&self) -> String {
         format!("{}:{}", self.metrics.bind_address, self.metrics.port)
+    }
+
+    pub async fn connection_string(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let creds = match &self.db_auth {
+            DbAuth::Direct { db_credentials } => db_credentials.clone(),
+            DbAuth::Vault { vault } => {
+                let token = fs::read_to_string(&vault.token_path)
+                    .await?
+                    .trim()
+                    .to_string();
+
+                let client = VaultClient::new(
+                    VaultClientSettingsBuilder::default()
+                        .address(&vault.address)
+                        .token(token)
+                        .build()?,
+                )?;
+
+                let mount = "secret";
+                let creds: DbCredentials =
+                    vaultrs::kv2::read(&client, mount, &vault.db_secret_path).await?;
+
+                creds
+            }
+        };
+
+        Ok(format!(
+            "postgres://{}:{}@{}:{}/{}",
+            creds.user, creds.password, self.db_host, self.db_port, self.db_name
+        ))
     }
 }
