@@ -1,0 +1,33 @@
+# Monad Staking Indexer Configuration
+# Copy this file to config.toml and adjust the values as needed.
+# All settings can be overridden with environment variables.
+
+# RPC WebSocket URL for connecting to Monad node
+# Can be overridden with INDEXER__RPC_URL environment variable
+rpc_url = "wss://rpc-testnet.monadinfra.com"
+
+# PostgreSQL database connection URL
+# Can be overridden with INDEXER__DATABASE_URL environment variable
+database_url = "postgresql://monad_staking_app:monad_staking_app@localhost:5400/monad_staking"
+
+# Number of blocks to process in each backfill chunk
+# Can be overridden with INDEXER__BACKFILL_CHUNK_SIZE
+backfill_chunk_size = 100
+
+# Interval in seconds between periodic gap checks
+# Can be overridden with INDEXER__GAP_CHECK_INTERVAL_SECS
+gap_check_interval_secs = 300
+
+[metrics]
+# Bind address for metrics server
+# Can be overridden with INDEXER__METRICS__BIND_ADDRESS
+bind_address = "0.0.0.0"
+
+# Port for metrics server
+# Can be overridden with INDEXER__METRICS__PORT
+port = 9090
+
+[logging]
+# Logging level: error, warn, info, debug, trace
+# Can be overridden with INDEXER__LOGGING__LEVEL
+level = "info"
