@@ -6,9 +6,11 @@
 # Can be overridden with INDEXER__RPC_URL environment variable
 rpc_url = "wss://rpc-testnet.monadinfra.com"
 
-# PostgreSQL database connection URL
-# Can be overridden with INDEXER__DATABASE_URL environment variable
-database_url = "postgresql://monad_staking_app:monad_staking_app@localhost:5400/monad_staking"
+# PostgreSQL database connection settings
+# Can be overridden with INDEXER__DB_HOST, INDEXER__DB_PORT, INDEXER__DB_NAME environment variables
+db_host = "localhost"
+db_port = 5400
+db_name = "monad_staking_indexer"
 
 # Number of blocks to process in each backfill chunk
 # Can be overridden with INDEXER__BACKFILL_CHUNK_SIZE
@@ -31,3 +33,34 @@ port = 9090
 # Logging level: error, warn, info, debug, trace
 # Can be overridden with INDEXER__LOGGING__LEVEL
 level = "info"
+
+# Database credentials (choose one method: [db_credentials] OR [vault])
+
+# Option 1: Direct credentials
+# Uncomment to use direct database credentials
+#[db_credentials]
+#user = "monad_staking_app"
+#password = "monad_staking_app"
+
+# Option 2: Vault credentials (recommended for production)
+# The secret at db_secret_path must contain { user = "...", password = "..." }
+
+# Option 2a: Token-based Vault authentication
+# Uncomment to use a static Vault token from a file
+#[vault]
+#address = "https://vault.example.com"
+#db_secret_path = "path/to/db/secret"
+#
+#[vault.token_config]
+#token_path = "/path/to/.vault-token"
+
+# Option 2b: Kubernetes service account authentication
+# Uncomment to use Kubernetes JWT token with Vault's Kubernetes auth method
+#[vault]
+#address = "https://vault.example.com"
+#db_secret_path = "path/to/db/secret"
+#
+#[vault.kubernetes_config]
+#role = "monad-indexer-role"
+## Optional: mount = "kubernetes" (defaults to "kubernetes")
+## Optional: jwt_path = "/var/run/secrets/kubernetes.io/serviceaccount/token" (defaults to standard K8s path)

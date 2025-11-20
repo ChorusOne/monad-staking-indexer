@@ -221,12 +221,12 @@ where
     Fut: std::future::Future<Output = std::result::Result<(), Box<dyn std::error::Error>>>,
 {
     let user = "monad_staking_setup";
-    let db = "monad_staking";
+    let db = "monad_staking_indexer";
     with_postgres(|pg_host| {
         execute_migrations(pg_host, user, db)?;
         let connection_url = format!("postgresql://{user}:{user}@localhost/{db}?host={pg_host}");
-        let runtime = tokio::runtime::Runtime::new()
-            .or_app_err("Failed to create tokio runtime.")?;
+        let runtime =
+            tokio::runtime::Runtime::new().or_app_err("Failed to create tokio runtime.")?;
 
         runtime
             .block_on(async {
@@ -234,12 +234,10 @@ where
                     .await
                     .map_err(|e| format!("Failed to create pool: {}", e))?;
 
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    f(pool)
-                ).await
-                .map_err(|_| "Test timeout after 5 seconds".into())
-                .and_then(|result| result)
+                tokio::time::timeout(std::time::Duration::from_secs(5), f(pool))
+                    .await
+                    .map_err(|_| "Test timeout after 5 seconds".into())
+                    .and_then(|result| result)
             })
             .map_err(|e| Error::new(format!("Async callback failed: {}", e)))
     })

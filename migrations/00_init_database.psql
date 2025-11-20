@@ -7,9 +7,9 @@ CREATE ROLE monad_staking_setup LOGIN PASSWORD 'monad_staking_setup';
 -- Role used for querying.
 CREATE ROLE monad_staking_readonly LOGIN PASSWORD 'monad_staking_readonly';
 
-CREATE DATABASE monad_staking OWNER monad_staking_setup;
+CREATE DATABASE monad_staking_indexer OWNER monad_staking_setup;
 
-\connect monad_staking;
+\connect monad_staking_indexer;
 
 -- By default, PostgreSQL creates a schema "public" that can be modified
 -- by any user ("PUBLIC"). We want more selective permissions.
