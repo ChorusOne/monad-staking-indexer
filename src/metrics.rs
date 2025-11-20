@@ -12,6 +12,7 @@ pub enum Metric {
     FailedToBackfill(u64),
     FailedToInsert,
     InsertTimeout,
+    DbConnected,
 }
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,7 @@ struct MetricsState {
     insert_timeout_err: u64,
     backfilled_blocks_ok: u64,
     backfilled_blocks_err: u64,
+    db_connections: u64,
 }
 
 impl MetricsState {
@@ -33,6 +35,7 @@ impl MetricsState {
             backfilled_blocks_err: 0,
             insert_events_err: 0,
             insert_timeout_err: 0,
+            db_connections: 0,
         }
     }
 
@@ -56,6 +59,9 @@ impl MetricsState {
             }
             Metric::InsertTimeout => {
                 self.insert_timeout_err += 1;
+            }
+            Metric::DbConnected => {
+                self.db_connections += 1;
             }
         }
     }
@@ -115,6 +121,15 @@ impl MetricsState {
         output.push_str(&format!(
             "staking_insert_timeout_err {}\n",
             self.insert_timeout_err
+        ));
+
+        output.push_str(
+            "# HELP staking_db_connections_total Total number of database connections established\n",
+        );
+        output.push_str("# TYPE staking_db_connections_total counter\n");
+        output.push_str(&format!(
+            "staking_db_connections_total {}\n",
+            self.db_connections
         ));
         output
     }

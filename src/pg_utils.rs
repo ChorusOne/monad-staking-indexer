@@ -6,6 +6,7 @@ use std::process::{Child, Command};
 
 use scopeguard::defer;
 use sqlx::PgPool;
+use tokio::sync::mpsc;
 
 use crate::error::{Error, Result, ResultExt};
 
@@ -230,7 +231,8 @@ where
 
         runtime
             .block_on(async {
-                let pool = crate::db::create_pool(&connection_url)
+                let (tx, _) = mpsc::unbounded_channel();
+                let pool = crate::db::create_pool(&connection_url, tx)
                     .await
                     .map_err(|e| format!("Failed to create pool: {}", e))?;
 

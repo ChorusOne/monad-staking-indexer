@@ -35,7 +35,8 @@ async fn main() -> Result<()> {
         .connection_string()
         .await
         .expect("Failed to build database connection string");
-    let pool = db::create_pool(&database_url).await?;
+    let (metrics_tx, metrics_rx) = mpsc::unbounded_channel();
+    let pool = db::create_pool(&database_url, metrics_tx.clone()).await?;
     info!("Database connected");
 
     info!("Getting current indexing state...");
@@ -51,7 +52,6 @@ async fn main() -> Result<()> {
     let (gap_tx, gap_rx) = mpsc::unbounded_channel();
 
     let (db_tx, db_rx) = mpsc::unbounded_channel();
-    let (metrics_tx, metrics_rx) = mpsc::unbounded_channel();
     let (metrics_request_tx, metrics_request_rx) = mpsc::unbounded_channel();
 
     let tasks = vec![
@@ -208,8 +208,10 @@ async fn process_live_blocks(
                 current_block_buffer.push(event);
 
                 if block_count >= batch_size {
-                    tx.send(DbRequest::InsertCompleteBlocks(Box::new(std::mem::take(&mut batch))))
-                        .expect("Channel closed");
+                    tx.send(DbRequest::InsertCompleteBlocks(Box::new(std::mem::take(
+                        &mut batch,
+                    ))))
+                    .expect("Channel closed");
                     batch = BlockBatch::new();
                     block_count = 0;
                 }
