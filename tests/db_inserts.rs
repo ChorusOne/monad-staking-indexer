@@ -1,4 +1,19 @@
-use monad_staking_indexer::{db, events, pg_utils, test_utils};
+use monad_staking_indexer::{
+    BlockBatch, db,
+    events::{self, StakingEventType},
+    pg_utils, test_utils,
+};
+use tokio::time::Duration;
+
+async fn insert_single_event(
+    pool: &sqlx::PgPool,
+    event: &events::StakingEvent,
+) -> Result<std::collections::HashMap<StakingEventType, (u64, u64)>, db::repository::DbError> {
+    let mut batch = BlockBatch::new();
+    batch.add_block_meta(event.block_meta().clone());
+    batch.add_event(event.clone());
+    db::insert_blocks(pool, &batch, Duration::from_secs(1)).await
+}
 
 #[test]
 fn test_delegate_event_duplicates() {
@@ -26,14 +41,12 @@ fn test_delegate_event_duplicates() {
             e.val_id = 2;
         }
 
-        db::repository::insert_staking_event(&pool, &event1).await?;
-        db::repository::insert_staking_event(&pool, &event2).await?;
+        insert_single_event(&pool, &event1).await?;
+        insert_single_event(&pool, &event2).await?;
 
-        let result = db::repository::insert_staking_event(&pool, &event1).await;
-        assert!(matches!(
-            result,
-            Err(db::repository::DbError::DuplicateEvent { .. })
-        ));
+        let result = insert_single_event(&pool, &event1).await?;
+        let total_inserted: u64 = result.values().map(|(inserted, _)| inserted).sum();
+        assert_eq!(total_inserted, 0);
 
         Ok(())
     })
@@ -67,14 +80,12 @@ fn test_undelegate_event_duplicates() {
             e.val_id = 2;
         }
 
-        db::repository::insert_staking_event(&pool, &event1).await?;
-        db::repository::insert_staking_event(&pool, &event2).await?;
+        insert_single_event(&pool, &event1).await?;
+        insert_single_event(&pool, &event2).await?;
 
-        let result = db::repository::insert_staking_event(&pool, &event1).await;
-        assert!(matches!(
-            result,
-            Err(db::repository::DbError::DuplicateEvent { .. })
-        ));
+        let result = insert_single_event(&pool, &event1).await?;
+        let total_inserted: u64 = result.values().map(|(inserted, _)| inserted).sum();
+        assert_eq!(total_inserted, 0);
 
         Ok(())
     })
@@ -108,14 +119,12 @@ fn test_withdraw_event_duplicates() {
             e.val_id = 2;
         }
 
-        db::repository::insert_staking_event(&pool, &event1).await?;
-        db::repository::insert_staking_event(&pool, &event2).await?;
+        insert_single_event(&pool, &event1).await?;
+        insert_single_event(&pool, &event2).await?;
 
-        let result = db::repository::insert_staking_event(&pool, &event1).await;
-        assert!(matches!(
-            result,
-            Err(db::repository::DbError::DuplicateEvent { .. })
-        ));
+        let result = insert_single_event(&pool, &event1).await?;
+        let total_inserted: u64 = result.values().map(|(inserted, _)| inserted).sum();
+        assert_eq!(total_inserted, 0);
 
         Ok(())
     })
@@ -148,14 +157,12 @@ fn test_claim_rewards_event_duplicates() {
             e.val_id = 2;
         }
 
-        db::repository::insert_staking_event(&pool, &event1).await?;
-        db::repository::insert_staking_event(&pool, &event2).await?;
+        insert_single_event(&pool, &event1).await?;
+        insert_single_event(&pool, &event2).await?;
 
-        let result = db::repository::insert_staking_event(&pool, &event1).await;
-        assert!(matches!(
-            result,
-            Err(db::repository::DbError::DuplicateEvent { .. })
-        ));
+        let result = insert_single_event(&pool, &event1).await?;
+        let total_inserted: u64 = result.values().map(|(inserted, _)| inserted).sum();
+        assert_eq!(total_inserted, 0);
 
         Ok(())
     })
@@ -187,14 +194,12 @@ fn test_validator_status_changed_event_duplicates() {
             e.validator_id = 2;
         }
 
-        db::repository::insert_staking_event(&pool, &event1).await?;
-        db::repository::insert_staking_event(&pool, &event2).await?;
+        insert_single_event(&pool, &event1).await?;
+        insert_single_event(&pool, &event2).await?;
 
-        let result = db::repository::insert_staking_event(&pool, &event1).await;
-        assert!(matches!(
-            result,
-            Err(db::repository::DbError::DuplicateEvent { .. })
-        ));
+        let result = insert_single_event(&pool, &event1).await?;
+        let total_inserted: u64 = result.values().map(|(inserted, _)| inserted).sum();
+        assert_eq!(total_inserted, 0);
 
         Ok(())
     })
@@ -226,14 +231,12 @@ fn test_commission_changed_event_duplicates() {
             e.validator_id = 2;
         }
 
-        db::repository::insert_staking_event(&pool, &event1).await?;
-        db::repository::insert_staking_event(&pool, &event2).await?;
+        insert_single_event(&pool, &event1).await?;
+        insert_single_event(&pool, &event2).await?;
 
-        let result = db::repository::insert_staking_event(&pool, &event1).await;
-        assert!(matches!(
-            result,
-            Err(db::repository::DbError::DuplicateEvent { .. })
-        ));
+        let result = insert_single_event(&pool, &event1).await?;
+        let total_inserted: u64 = result.values().map(|(inserted, _)| inserted).sum();
+        assert_eq!(total_inserted, 0);
 
         Ok(())
     })

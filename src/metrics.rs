@@ -7,8 +7,7 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Metric {
-    DuplicateEvent(StakingEventType),
-    InsertedEvent(StakingEventType),
+    InsertedEvents(HashMap<StakingEventType, (u64, u64)>),
     BackfilledBlocks(u64),
     FailedToBackfill(u64),
     FailedToInsert,
@@ -36,11 +35,12 @@ impl MetricsState {
 
     fn record(&mut self, metric: Metric) {
         match metric {
-            Metric::InsertedEvent(event_type) => {
-                *self.inserted.entry(event_type).or_insert(0) += 1;
-            }
-            Metric::DuplicateEvent(event_type) => {
-                *self.duplicates.entry(event_type).or_insert(0) += 1;
+            Metric::InsertedEvents(counts) => {
+                for (event_type, (inserted, total)) in counts {
+                    *self.inserted.entry(event_type).or_insert(0) += inserted;
+                    *self.duplicates.entry(event_type).or_insert(0) +=
+                        total.saturating_sub(inserted);
+                }
             }
             Metric::BackfilledBlocks(count) => {
                 self.backfilled_blocks_ok += count;

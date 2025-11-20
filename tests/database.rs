@@ -1,6 +1,8 @@
+use std::time::Duration;
+
 use monad_staking_indexer::{
-    DbRequest, db,
-    events::{self, StakingEvent},
+    BlockBatch, DbRequest, db,
+    events::{self, BlockMeta, StakingEvent, StakingEventType},
     metrics, pg_utils, test_utils,
 };
 
@@ -27,23 +29,23 @@ fn process_single_block() {
             },
         };
 
-        tx.send(DbRequest::InsertStakingEvent(StakingEvent::Delegate(
-            delegate,
-        )))
-        .unwrap();
+        let mut batch = BlockBatch::new();
+        batch.add_block_meta(delegate.block_meta.clone());
+        batch.add_event(StakingEvent::Delegate(delegate));
+        tx.send(DbRequest::InsertCompleteBlocks(batch))
+            .unwrap();
 
         let got = metrics_rx.recv().await.unwrap();
 
-        assert_eq!(
-            got,
-            metrics::Metric::InsertedEvent(events::StakingEventType::Delegate)
-        );
+        if let metrics::Metric::InsertedEvents(hm) = got {
+            assert_eq!(hm.get(&StakingEventType::Delegate), Some(&(1, 1)));
+        } else {
+            panic!("unexpected");
+        };
 
         tx.send(DbRequest::GetBlockGaps).unwrap();
 
         drop(tx);
-        // we inserted exactly 1 event, there can't be gaps
-        // no events, closed channel
         assert_eq!(gaps_rx.recv().await, None);
 
         Ok(())
@@ -78,23 +80,23 @@ fn processes_non_consecutive_blocks() {
         delegate2.block_meta.block_number = 200;
         delegate2.block_meta.block_hash = "0xbbbbbb".to_string();
 
-        tx.send(DbRequest::InsertStakingEvent(StakingEvent::Delegate(
-            delegate,
-        )))
-        .unwrap();
-        tx.send(DbRequest::InsertStakingEvent(StakingEvent::Delegate(
-            delegate2,
-        )))
-        .unwrap();
+        let mut batch1 = BlockBatch::new();
+        batch1.add_block_meta(delegate.block_meta.clone());
+        batch1.add_event(StakingEvent::Delegate(delegate));
+
+        let mut batch2 = BlockBatch::new();
+        batch2.add_block_meta(delegate2.block_meta.clone());
+        batch2.add_event(StakingEvent::Delegate(delegate2));
+
+        tx.send(DbRequest::InsertCompleteBlocks(batch1)).unwrap();
+        tx.send(DbRequest::InsertCompleteBlocks(batch2)).unwrap();
 
         tx.send(DbRequest::GetBlockGaps).unwrap();
         drop(tx);
 
         metrics_rx.recv().await.unwrap();
         metrics_rx.recv().await.unwrap();
-        // got metrics for both == they are stored in db
 
-        // we inserted 2 events with height={100, 200}
         let gap = gaps_rx.recv().await.unwrap();
         assert_eq!(gap.start, 101);
         assert_eq!(gap.end, 200);
@@ -104,6 +106,15 @@ fn processes_non_consecutive_blocks() {
         Ok(())
     })
     .unwrap();
+}
+
+async fn insert_blockmeta(
+    pool: &sqlx::PgPool,
+    meta: &BlockMeta,
+) -> Result<std::collections::HashMap<StakingEventType, (u64, u64)>, db::repository::DbError> {
+    let mut batch = BlockBatch::new();
+    batch.add_block_meta(meta.clone());
+    db::insert_blocks(pool, &batch, Duration::from_secs(1)).await
 }
 
 #[test]
@@ -120,7 +131,7 @@ fn test_block_gaps_with_consecutive_blocks() {
                 block_hash: format!("0xhash{}", i),
                 block_timestamp: 1234567890 + i,
             };
-            db::repository::ensure_block(&pool, &block_meta).await?;
+            insert_blockmeta(&pool, &block_meta).await?;
         }
 
         let gaps = db::repository::get_block_gaps(&pool).await?;
@@ -144,7 +155,7 @@ fn test_get_max_block_number() {
             block_hash: "0xhash100".to_string(),
             block_timestamp: 1234567890,
         };
-        db::repository::ensure_block(&pool, &block_meta_1).await?;
+        insert_blockmeta(&pool, &block_meta_1).await?;
 
         let max_block = db::repository::get_max_block_number(&pool).await?;
         assert_eq!(max_block, Some(100));
@@ -154,14 +165,14 @@ fn test_get_max_block_number() {
             block_hash: "0xhash50".to_string(),
             block_timestamp: 1234567850,
         };
-        db::repository::ensure_block(&pool, &block_meta_2).await?;
+        insert_blockmeta(&pool, &block_meta_2).await?;
 
         let block_meta_3 = events::BlockMeta {
             block_number: 200,
             block_hash: "0xhash200".to_string(),
             block_timestamp: 1234567900,
         };
-        db::repository::ensure_block(&pool, &block_meta_3).await?;
+        insert_blockmeta(&pool, &block_meta_3).await?;
 
         let max_block = db::repository::get_max_block_number(&pool).await?;
         assert_eq!(max_block, Some(200));
@@ -186,7 +197,7 @@ fn test_get_block_gaps_with_multiple_gaps() {
                 block_hash: format!("0xhash{}", block_num),
                 block_timestamp: 1234567890 + block_num,
             };
-            db::repository::ensure_block(&pool, &block_meta).await?;
+            insert_blockmeta(&pool, &block_meta).await?;
         }
 
         let gaps = db::repository::get_block_gaps(&pool).await?;

@@ -1,8 +1,11 @@
 pub mod repository;
+mod repository_batch;
+
+pub use repository_batch::insert_blocks;
 
 use eyre::Result;
 use log::info;
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::{PgPool, postgres::PgPoolOptions};
 
 pub async fn create_pool(database_url: &str) -> Result<PgPool> {
     let pool = PgPoolOptions::new()

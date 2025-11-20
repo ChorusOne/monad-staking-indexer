@@ -16,11 +16,15 @@ pub const STAKING_CONTRACT_ADDRESS: Address =
 use std::ops::Range;
 
 use eyre::Result;
-use log::{error, info, log};
+use log::{error, info};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 
-use crate::events::{StakingEvent, StakingEventType};
+use crate::events::{
+    BlockMeta, ClaimRewardsEvent, CommissionChangedEvent, DelegateEvent, EpochChangedEvent,
+    StakingEvent, UndelegateEvent, ValidatorCreatedEvent, ValidatorRewardedEvent,
+    ValidatorStatusChangedEvent, WithdrawEvent,
+};
 
 pub fn chunk_range(range: Range<u64>, chunk_size: u64) -> Vec<Range<u64>> {
     let mut chunks = Vec::with_capacity(((range.end - range.start) / chunk_size) as usize);
@@ -35,8 +39,63 @@ pub fn chunk_range(range: Range<u64>, chunk_size: u64) -> Vec<Range<u64>> {
     chunks
 }
 
+#[derive(Debug)]
+pub struct CompleteBlock {
+    pub block_meta: BlockMeta,
+    pub events: Vec<StakingEvent>,
+}
+
+#[derive(Debug, Default)]
+pub struct BlockBatch {
+    pub block_meta: Vec<BlockMeta>,
+    pub delegate: Vec<DelegateEvent>,
+    pub undelegate: Vec<UndelegateEvent>,
+    pub withdraw: Vec<WithdrawEvent>,
+    pub claim_rewards: Vec<ClaimRewardsEvent>,
+    pub validator_rewarded: Vec<ValidatorRewardedEvent>,
+    pub epoch_changed: Vec<EpochChangedEvent>,
+    pub validator_created: Vec<ValidatorCreatedEvent>,
+    pub validator_status_changed: Vec<ValidatorStatusChangedEvent>,
+    pub commission_changed: Vec<CommissionChangedEvent>,
+}
+
+impl BlockBatch {
+    pub fn new() -> Self {
+        Self {
+            block_meta: Vec::new(),
+            delegate: Vec::new(),
+            undelegate: Vec::new(),
+            withdraw: Vec::new(),
+            claim_rewards: Vec::new(),
+            validator_rewarded: Vec::new(),
+            epoch_changed: Vec::new(),
+            validator_created: Vec::new(),
+            validator_status_changed: Vec::new(),
+            commission_changed: Vec::new(),
+        }
+    }
+
+    pub fn add_event(&mut self, event: StakingEvent) {
+        match event {
+            StakingEvent::Delegate(e) => self.delegate.push(e),
+            StakingEvent::Undelegate(e) => self.undelegate.push(e),
+            StakingEvent::Withdraw(e) => self.withdraw.push(e),
+            StakingEvent::ClaimRewards(e) => self.claim_rewards.push(e),
+            StakingEvent::ValidatorRewarded(e) => self.validator_rewarded.push(e),
+            StakingEvent::EpochChanged(e) => self.epoch_changed.push(e),
+            StakingEvent::ValidatorCreated(e) => self.validator_created.push(e),
+            StakingEvent::ValidatorStatusChanged(e) => self.validator_status_changed.push(e),
+            StakingEvent::CommissionChanged(e) => self.commission_changed.push(e),
+        }
+    }
+
+    pub fn add_block_meta(&mut self, meta: BlockMeta) {
+        self.block_meta.push(meta);
+    }
+}
+
 pub enum DbRequest {
-    InsertStakingEvent(StakingEvent),
+    InsertCompleteBlocks(BlockBatch),
     GetBlockGaps,
 }
 
@@ -45,9 +104,12 @@ pub async fn process_db_requests(
     mut rx: mpsc::UnboundedReceiver<DbRequest>,
     gap_tx: mpsc::UnboundedSender<Range<u64>>,
     metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
+    db_operation_timeout_secs: u64,
 ) -> Result<()> {
-    while let Some(event) = rx.recv().await {
-        match event {
+    use tokio::time::Duration;
+    let timeout = Duration::from_secs(db_operation_timeout_secs);
+    while let Some(req) = rx.recv().await {
+        match req {
             DbRequest::GetBlockGaps => {
                 match db::repository::get_block_gaps(&pool).await {
                     Ok(gaps) => {
@@ -66,35 +128,21 @@ pub async fn process_db_requests(
                     }
                 };
             }
-            DbRequest::InsertStakingEvent(event) => {
-                let metric = match db::repository::insert_staking_event(&pool, &event).await {
-                    Ok(()) => {
-                        let level = if event.event_type() == StakingEventType::ValidatorRewarded {
-                            log::Level::Debug
-                        } else {
-                            log::Level::Info
-                        };
+            DbRequest::InsertCompleteBlocks(blocks) => {
+                info!("Inserting {} blocks", blocks.block_meta.len(),);
 
-                        log!(level, "{} stored in database", event);
-                        metrics::Metric::InsertedEvent(event.event_type())
-                    }
-                    Err(db::repository::DbError::DuplicateEvent {
-                        event_type,
-                        block_meta,
-                        tx_meta,
-                    }) => {
-                        info!(
-                            "Duplicate event: {:?} at block {} with tx {:?}",
-                            event_type, block_meta.block_number, tx_meta
-                        );
-                        metrics::Metric::DuplicateEvent(event_type)
+                match db::insert_blocks(&pool, &blocks, timeout).await {
+                    Ok(event_counts) => {
+                        let total_inserted: u64 =
+                            event_counts.values().map(|(inserted, _)| inserted).sum();
+                        info!("Successfully inserted {} events", total_inserted);
+                        let _ = metrics_tx.send(metrics::Metric::InsertedEvents(event_counts));
                     }
                     Err(e) => {
-                        error!("Failed to insert event {event:?}: {e:?}");
-                        metrics::Metric::FailedToInsert
+                        error!("Failed to insert blocks (possibly timeout): {:?}", e);
+                        let _ = metrics_tx.send(metrics::Metric::FailedToInsert);
                     }
-                };
-                let _ = metrics_tx.send(metric);
+                }
             }
         }
     }
