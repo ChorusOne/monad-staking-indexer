@@ -24,11 +24,41 @@ pub struct DbCredentials {
     password: String,
 }
 
+fn default_k8s_mount() -> String {
+    "kubernetes".to_string()
+}
+
+fn default_jwt_path() -> String {
+    "/var/run/secrets/kubernetes.io/serviceaccount/token".to_string()
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct TokenConfig {
+    token_path: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct KubernetesConfig {
+    role: String,
+    #[serde(default = "default_k8s_mount")]
+    mount: String,
+    #[serde(default = "default_jwt_path")]
+    jwt_path: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum VaultAuthMethod {
+    Token { token_config: TokenConfig },
+    Kubernetes { kubernetes_config: KubernetesConfig },
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct VaultConfig {
     address: String,
-    token_path: String,
     db_secret_path: String,
+    #[serde(flatten)]
+    auth: VaultAuthMethod,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -94,10 +124,39 @@ impl Config {
         let creds = match &self.db_auth {
             DbAuth::Direct { db_credentials } => db_credentials.clone(),
             DbAuth::Vault { vault } => {
-                let token = fs::read_to_string(&vault.token_path)
-                    .await?
-                    .trim()
-                    .to_string();
+                let token = match &vault.auth {
+                    VaultAuthMethod::Token { token_config } => {
+                        fs::read_to_string(&token_config.token_path)
+                            .await
+                            .expect("Can't read plain token file")
+                            .trim()
+                            .to_string()
+                    }
+                    VaultAuthMethod::Kubernetes { kubernetes_config } => {
+                        let jwt = fs::read_to_string(&kubernetes_config.jwt_path)
+                            .await
+                            .expect("Can't read k8s jwt file")
+                            .trim()
+                            .to_string();
+
+                        let client = VaultClient::new(
+                            VaultClientSettingsBuilder::default()
+                                .address(&vault.address)
+                                .build()?,
+                        )?;
+
+                        let auth_info = vaultrs::auth::kubernetes::login(
+                            &client,
+                            &kubernetes_config.mount,
+                            &kubernetes_config.role,
+                            &jwt,
+                        )
+                        .await
+                        .expect("Can't log in to vault via k8s jwt token");
+
+                        auth_info.client_token
+                    }
+                };
 
                 let client = VaultClient::new(
                     VaultClientSettingsBuilder::default()
