@@ -11,6 +11,7 @@ pub enum Metric {
     BackfilledBlocks(u64),
     FailedToBackfill(u64),
     FailedToInsert,
+    InsertTimeout,
 }
 
 #[derive(Debug, Clone)]
@@ -18,6 +19,7 @@ struct MetricsState {
     inserted: HashMap<StakingEventType, u64>,
     duplicates: HashMap<StakingEventType, u64>,
     insert_events_err: u64,
+    insert_timeout_err: u64,
     backfilled_blocks_ok: u64,
     backfilled_blocks_err: u64,
 }
@@ -30,6 +32,7 @@ impl MetricsState {
             backfilled_blocks_ok: 0,
             backfilled_blocks_err: 0,
             insert_events_err: 0,
+            insert_timeout_err: 0,
         }
     }
 
@@ -50,6 +53,9 @@ impl MetricsState {
             }
             Metric::FailedToInsert => {
                 self.insert_events_err += 1;
+            }
+            Metric::InsertTimeout => {
+                self.insert_timeout_err += 1;
             }
         }
     }
@@ -96,10 +102,19 @@ impl MetricsState {
         output.push_str(
             "# HELP staking_insert_events_err Number of events that failed to be inserted\n",
         );
-        output.push_str("# TYPE staking_backfilled_blocks_err counter\n");
+        output.push_str("# TYPE staking_insert_events_err counter\n");
         output.push_str(&format!(
             "staking_insert_events_err {}\n",
             self.insert_events_err
+        ));
+
+        output.push_str(
+            "# HELP staking_insert_timeout_err Number of insert operations that timed out\n",
+        );
+        output.push_str("# TYPE staking_insert_timeout_err counter\n");
+        output.push_str(&format!(
+            "staking_insert_timeout_err {}\n",
+            self.insert_timeout_err
         ));
         output
     }

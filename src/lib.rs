@@ -138,8 +138,12 @@ pub async fn process_db_requests(
                         info!("Successfully inserted {} events", total_inserted);
                         let _ = metrics_tx.send(metrics::Metric::InsertedEvents(event_counts));
                     }
+                    Err(db::repository::DbError::Sqlx(sqlx::Error::PoolTimedOut)) => {
+                        error!("Insert operation timed out");
+                        let _ = metrics_tx.send(metrics::Metric::InsertTimeout);
+                    }
                     Err(e) => {
-                        error!("Failed to insert blocks (possibly timeout): {:?}", e);
+                        error!("Failed to insert blocks: {:?}", e);
                         let _ = metrics_tx.send(metrics::Metric::FailedToInsert);
                     }
                 }
