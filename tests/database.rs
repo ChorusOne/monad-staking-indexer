@@ -32,7 +32,7 @@ fn process_single_block() {
         let mut batch = BlockBatch::new();
         batch.add_block_meta(delegate.block_meta.clone());
         batch.add_event(StakingEvent::Delegate(delegate));
-        tx.send(DbRequest::InsertCompleteBlocks(batch))
+        tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch)))
             .unwrap();
 
         let got = metrics_rx.recv().await.unwrap();
@@ -88,8 +88,8 @@ fn processes_non_consecutive_blocks() {
         batch2.add_block_meta(delegate2.block_meta.clone());
         batch2.add_event(StakingEvent::Delegate(delegate2));
 
-        tx.send(DbRequest::InsertCompleteBlocks(batch1)).unwrap();
-        tx.send(DbRequest::InsertCompleteBlocks(batch2)).unwrap();
+        tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch1))).unwrap();
+        tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch2))).unwrap();
 
         tx.send(DbRequest::GetBlockGaps).unwrap();
         drop(tx);

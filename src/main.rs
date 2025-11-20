@@ -208,7 +208,7 @@ async fn process_live_blocks(
                 current_block_buffer.push(event);
 
                 if block_count >= batch_size {
-                    tx.send(DbRequest::InsertCompleteBlocks(std::mem::take(&mut batch)))
+                    tx.send(DbRequest::InsertCompleteBlocks(Box::new(std::mem::take(&mut batch))))
                         .expect("Channel closed");
                     batch = BlockBatch::new();
                     block_count = 0;
@@ -271,7 +271,7 @@ async fn process_historical_blocks(
     }
 
     if !batch.block_meta.is_empty() {
-        tx.send(DbRequest::InsertCompleteBlocks(batch))
+        tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch)))
             .expect("Channel closed");
     }
 

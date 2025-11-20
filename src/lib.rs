@@ -95,7 +95,7 @@ impl BlockBatch {
 }
 
 pub enum DbRequest {
-    InsertCompleteBlocks(BlockBatch),
+    InsertCompleteBlocks(Box<BlockBatch>),
     GetBlockGaps,
 }
 
