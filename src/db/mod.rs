@@ -15,6 +15,7 @@ pub async fn create_pool(database_url: &str, metrics_tx: mpsc::UnboundedSender<M
         .after_connect(move |_conn, _meta| {
             let metrics_tx = metrics_tx.clone();
             Box::pin(async move {
+                info!("Establishing a DB connection");
                 let _ = metrics_tx.send(Metric::DbConnected);
                 Ok(())
             })
