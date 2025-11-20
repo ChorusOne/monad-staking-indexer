@@ -1,11 +1,15 @@
-use monad_staking_indexer::{db, events, metrics, pg_utils, test_utils};
+use monad_staking_indexer::{
+    DbRequest, db,
+    events::{self, StakingEvent},
+    metrics, pg_utils, test_utils,
+};
 
 #[test]
 fn process_single_block() {
     pg_utils::with_postgres_and_schema_async(|pool| async move {
         test_utils::init_test_logger();
 
-        let (tx, mut metrics_rx) = test_utils::spawn_process_event_logs(&pool);
+        let (tx, mut gaps_rx, mut metrics_rx) = test_utils::spawn_process_event_logs(&pool);
 
         let delegate = events::DelegateEvent {
             val_id: 1,
@@ -23,7 +27,10 @@ fn process_single_block() {
             },
         };
 
-        tx.send(events::StakingEvent::Delegate(delegate)).unwrap();
+        tx.send(DbRequest::InsertStakingEvent(StakingEvent::Delegate(
+            delegate,
+        )))
+        .unwrap();
 
         let got = metrics_rx.recv().await.unwrap();
 
@@ -32,11 +39,12 @@ fn process_single_block() {
             metrics::Metric::InsertedEvent(events::StakingEventType::Delegate)
         );
 
-        drop(tx);
+        tx.send(DbRequest::GetBlockGaps).unwrap();
 
+        drop(tx);
         // we inserted exactly 1 event, there can't be gaps
-        let gaps = db::repository::get_block_gaps(&pool).await.unwrap();
-        assert_eq!(gaps.len(), 0);
+        // no events, closed channel
+        assert_eq!(gaps_rx.recv().await, None);
 
         Ok(())
     })
@@ -48,7 +56,7 @@ fn processes_non_consecutive_blocks() {
     pg_utils::with_postgres_and_schema_async(|pool| async move {
         test_utils::init_test_logger();
 
-        let (tx, mut metrics_rx) = test_utils::spawn_process_event_logs(&pool);
+        let (tx, mut gaps_rx, mut metrics_rx) = test_utils::spawn_process_event_logs(&pool);
 
         let delegate = events::DelegateEvent {
             val_id: 1,
@@ -70,9 +78,16 @@ fn processes_non_consecutive_blocks() {
         delegate2.block_meta.block_number = 200;
         delegate2.block_meta.block_hash = "0xbbbbbb".to_string();
 
-        tx.send(events::StakingEvent::Delegate(delegate)).unwrap();
-        tx.send(events::StakingEvent::Delegate(delegate2)).unwrap();
+        tx.send(DbRequest::InsertStakingEvent(StakingEvent::Delegate(
+            delegate,
+        )))
+        .unwrap();
+        tx.send(DbRequest::InsertStakingEvent(StakingEvent::Delegate(
+            delegate2,
+        )))
+        .unwrap();
 
+        tx.send(DbRequest::GetBlockGaps).unwrap();
         drop(tx);
 
         metrics_rx.recv().await.unwrap();
@@ -80,11 +95,11 @@ fn processes_non_consecutive_blocks() {
         // got metrics for both == they are stored in db
 
         // we inserted 2 events with height={100, 200}
-        let gaps = db::repository::get_block_gaps(&pool).await.unwrap();
-        assert_eq!(gaps.len(), 1);
+        let gap = gaps_rx.recv().await.unwrap();
+        assert_eq!(gap.start, 101);
+        assert_eq!(gap.end, 200);
 
-        assert_eq!(gaps[0].start, 101);
-        assert_eq!(gaps[0].end, 200);
+        assert!(gaps_rx.recv().await.is_none());
 
         Ok(())
     })

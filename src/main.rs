@@ -1,5 +1,6 @@
 use monad_staking_indexer::{
-    STAKING_CONTRACT_ADDRESS, chunk_range, config::Config, db, events, metrics, process_event_logs,
+    DbRequest, STAKING_CONTRACT_ADDRESS, chunk_range, config::Config, db, events, metrics,
+    process_db_requests,
 };
 
 use std::ops::Range;
@@ -13,11 +14,8 @@ use alloy::{
 use eyre::Result;
 use futures_util::stream::StreamExt;
 use log::{error, info};
-use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
-
-use events::StakingEvent;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -46,101 +44,62 @@ async fn main() -> Result<()> {
     let gaps_provider = ProviderBuilder::new().on_ws(ws_gaps).await?;
     let (gap_tx, gap_rx) = mpsc::unbounded_channel();
 
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (db_tx, db_rx) = mpsc::unbounded_channel();
     let (metrics_tx, metrics_rx) = mpsc::unbounded_channel();
     let (metrics_request_tx, metrics_request_rx) = mpsc::unbounded_channel();
-    info!("Watching staking contract at: {}", STAKING_CONTRACT_ADDRESS);
 
-    tokio::spawn(async move {
-        if let Err(e) = metrics::process_metrics(metrics_rx, metrics_request_rx).await {
-            error!("Metrics processing task failed: {}", e);
-        }
-    });
-
-    let metrics_bind_addr = config.metrics_bind_addr();
-    tokio::spawn(async move {
-        if let Err(e) = metrics::run_metrics_server(metrics_request_tx, &metrics_bind_addr).await {
-            error!("Metrics server task failed: {}", e);
-        }
-    });
-
-    let event_metrics_tx = metrics_tx.clone();
-    let event_pool = pool.clone();
-    tokio::spawn(async move {
-        if let Err(e) = process_event_logs(event_pool, rx, event_metrics_tx).await {
-            error!("Event processing task failed: {}", e);
-        }
-    });
-
-    let gap_check_pool = pool.clone();
-    let gap_check_tx = gap_tx.clone();
-    let gap_check_interval = config.gap_check_interval_secs;
-    tokio::spawn(async move {
-        if let Err(e) =
-            periodic_gap_check_task(gap_check_pool, gap_check_tx, gap_check_interval).await
-        {
-            error!("Periodic gap check task failed: {}", e);
-        }
-    });
-
-    let gaps_process_tx = tx.clone();
-    let gaps_metrics_tx = metrics_tx.clone();
-    let backfill_chunk_size = config.backfill_chunk_size;
-    tokio::spawn(async move {
-        if let Err(e) = process_gaps_task(
+    let tasks = vec![
+        tokio::spawn(metrics::process_metrics(metrics_rx, metrics_request_rx)),
+        tokio::spawn(metrics::run_metrics_server(
+            metrics_request_tx,
+            config.metrics_bind_addr().clone(),
+        )),
+        tokio::spawn(process_db_requests(
+            pool.clone(),
+            db_rx,
+            gap_tx.clone(),
+            metrics_tx.clone(),
+        )),
+        tokio::spawn(periodic_gap_check(
+            config.gap_check_interval_secs,
+            db_tx.clone(),
+        )),
+        tokio::spawn(process_gaps_task(
             gaps_provider,
             STAKING_CONTRACT_ADDRESS,
-            gaps_process_tx,
+            db_tx.clone(),
             gap_rx,
-            gaps_metrics_tx,
-            backfill_chunk_size,
-        )
-        .await
-        {
-            error!("Gap processing task failed: {}", e);
-        }
-    });
+            metrics_tx.clone(),
+            config.backfill_chunk_size,
+        )),
+        tokio::spawn(process_live_blocks(
+            live_provider,
+            STAKING_CONTRACT_ADDRESS,
+            max_block_on_startup,
+            db_tx,
+            gap_tx,
+        )),
+    ];
 
-    process_live_blocks(
-        &live_provider,
-        STAKING_CONTRACT_ADDRESS,
-        // Intentionally start on the last block we processed,
-        // in case the program was interrupted half way through
-        // the block
-        max_block_on_startup,
-        tx,
-        gap_tx,
-    )
-    .await
+    for task in tasks {
+        if let Err(e) = task.await {
+            error!("Task panicked: {:?}", e);
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
 }
 
-async fn periodic_gap_check_task(
-    pool: PgPool,
-    gap_tx: mpsc::UnboundedSender<Range<u64>>,
+async fn periodic_gap_check(
     interval_secs: u64,
+    gap_tx: mpsc::UnboundedSender<DbRequest>,
 ) -> Result<()> {
     let mut interval = interval(Duration::from_secs(interval_secs));
     interval.tick().await;
-
     loop {
         info!("Running periodic gap check...");
-        match db::repository::get_block_gaps(&pool).await {
-            Ok(gaps) => {
-                if gaps.is_empty() {
-                    info!("No gaps detected");
-                } else {
-                    info!("Detected {} gap(s)", gaps.len());
-                    for range in gaps {
-                        info!("Queueing gap for backfill: {:?}", range);
-                        gap_tx.send(range)?;
-                    }
-                }
-            }
-            Err(e) => {
-                error!("Failed to check for gaps: {}", e);
-            }
-        }
-
+        let _ = gap_tx.send(DbRequest::GetBlockGaps);
         interval.tick().await;
     }
 }
@@ -148,7 +107,7 @@ async fn periodic_gap_check_task(
 async fn process_gaps_task(
     provider: RootProvider<PubSubFrontend>,
     staking_contract_address: Address,
-    log_tx: mpsc::UnboundedSender<StakingEvent>,
+    log_tx: mpsc::UnboundedSender<DbRequest>,
     mut gap_rx: mpsc::UnboundedReceiver<Range<u64>>,
     metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
     chunk_size: u64,
@@ -196,10 +155,10 @@ async fn process_gaps_task(
 }
 
 async fn process_live_blocks(
-    provider: &RootProvider<PubSubFrontend>,
+    provider: RootProvider<PubSubFrontend>,
     staking_contract_address: Address,
     mut start_block: Option<u64>,
-    tx: mpsc::UnboundedSender<StakingEvent>,
+    tx: mpsc::UnboundedSender<DbRequest>,
     gap_tx: mpsc::UnboundedSender<Range<u64>>,
 ) -> Result<()> {
     let filter = Filter::new().address(staking_contract_address);
@@ -216,7 +175,8 @@ async fn process_live_blocks(
                     gap_tx.send(start..end).unwrap();
                     start_block = None;
                 }
-                tx.send(event).expect("Channel closed");
+                tx.send(DbRequest::InsertStakingEvent(event))
+                    .expect("Channel closed");
             }
             Ok(None) => (),
             Err(e) => {
@@ -232,7 +192,7 @@ async fn process_historical_blocks(
     provider: &RootProvider<PubSubFrontend>,
     staking_contract_address: Address,
     range: &Range<u64>,
-    tx: mpsc::UnboundedSender<StakingEvent>,
+    tx: mpsc::UnboundedSender<DbRequest>,
 ) -> Result<()> {
     let filter = Filter::new()
         .address(staking_contract_address)
@@ -243,7 +203,8 @@ async fn process_historical_blocks(
 
     for log in logs {
         if let Some(event) = events::extract_event(&log)? {
-            tx.send(event).expect("Channel closed");
+            tx.send(DbRequest::InsertStakingEvent(event))
+                .expect("Channel closed");
         }
     }
 

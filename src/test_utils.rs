@@ -1,7 +1,9 @@
+use std::ops::Range;
+
 use sqlx::PgPool;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use crate::{events, metrics, process_event_logs};
+use crate::{DbRequest, metrics, process_db_requests};
 
 pub fn init_test_logger() {
     let _ = env_logger::builder()
@@ -14,18 +16,20 @@ pub fn init_test_logger() {
 pub fn spawn_process_event_logs(
     pool: &PgPool,
 ) -> (
-    UnboundedSender<events::StakingEvent>,
+    UnboundedSender<DbRequest>,
+    UnboundedReceiver<Range<u64>>,
     UnboundedReceiver<metrics::Metric>,
 ) {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (db_tx, db_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (gap_tx, gap_rx) = tokio::sync::mpsc::unbounded_channel();
     let (metrics_tx, metrics_rx) = tokio::sync::mpsc::unbounded_channel();
 
     let pool_clone = pool.clone();
     tokio::spawn(async move {
-        if let Err(e) = process_event_logs(pool_clone, rx, metrics_tx).await {
-            eprintln!("process_event_logs failed: {}", e);
+        if let Err(e) = process_db_requests(pool_clone, db_rx, gap_tx, metrics_tx).await {
+            eprintln!("process_db_requests failed: {}", e);
         }
     });
 
-    (tx, metrics_rx)
+    (db_tx, gap_rx, metrics_rx)
 }

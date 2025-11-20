@@ -35,37 +35,66 @@ pub fn chunk_range(range: Range<u64>, chunk_size: u64) -> Vec<Range<u64>> {
     chunks
 }
 
-pub async fn process_event_logs(
+pub enum DbRequest {
+    InsertStakingEvent(StakingEvent),
+    GetBlockGaps,
+}
+
+pub async fn process_db_requests(
     pool: PgPool,
-    mut rx: mpsc::UnboundedReceiver<StakingEvent>,
+    mut rx: mpsc::UnboundedReceiver<DbRequest>,
+    gap_tx: mpsc::UnboundedSender<Range<u64>>,
     metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
 ) -> Result<()> {
     while let Some(event) = rx.recv().await {
-        match db::repository::insert_staking_event(&pool, &event).await {
-            Ok(()) => {
-                let level = if event.event_type() == StakingEventType::ValidatorRewarded {
-                    log::Level::Debug
-                } else {
-                    log::Level::Info
+        match event {
+            DbRequest::GetBlockGaps => {
+                match db::repository::get_block_gaps(&pool).await {
+                    Ok(gaps) => {
+                        if gaps.is_empty() {
+                            info!("No gaps detected");
+                        } else {
+                            info!("Detected {} gap(s)", gaps.len());
+                            for range in gaps {
+                                info!("Queueing gap for backfill: {:?}", range);
+                                gap_tx.send(range)?;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to check for gaps: {}", e);
+                    }
                 };
+            }
+            DbRequest::InsertStakingEvent(event) => {
+                let metric = match db::repository::insert_staking_event(&pool, &event).await {
+                    Ok(()) => {
+                        let level = if event.event_type() == StakingEventType::ValidatorRewarded {
+                            log::Level::Debug
+                        } else {
+                            log::Level::Info
+                        };
 
-                log!(level, "{} stored in database", event);
-                let _ = metrics_tx.send(metrics::Metric::InsertedEvent(event.event_type()));
-            }
-            Err(db::repository::DbError::DuplicateEvent {
-                event_type,
-                block_meta,
-                tx_meta,
-            }) => {
-                info!(
-                    "Duplicate event: {:?} at block {} with tx {:?}",
-                    event_type, block_meta.block_number, tx_meta
-                );
-                let _ = metrics_tx.send(metrics::Metric::DuplicateEvent(event_type));
-            }
-            Err(e) => {
-                error!("Failed to insert event {event:?}: {e:?}");
-                let _ = metrics_tx.send(metrics::Metric::FailedToInsert);
+                        log!(level, "{} stored in database", event);
+                        metrics::Metric::InsertedEvent(event.event_type())
+                    }
+                    Err(db::repository::DbError::DuplicateEvent {
+                        event_type,
+                        block_meta,
+                        tx_meta,
+                    }) => {
+                        info!(
+                            "Duplicate event: {:?} at block {} with tx {:?}",
+                            event_type, block_meta.block_number, tx_meta
+                        );
+                        metrics::Metric::DuplicateEvent(event_type)
+                    }
+                    Err(e) => {
+                        error!("Failed to insert event {event:?}: {e:?}");
+                        metrics::Metric::FailedToInsert
+                    }
+                };
+                let _ = metrics_tx.send(metric);
             }
         }
     }
