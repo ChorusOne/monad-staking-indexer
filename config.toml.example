@@ -3,8 +3,8 @@
 # All settings can be overridden with environment variables.
 
 # RPC WebSocket URL for connecting to Monad node
-# Can be overridden with INDEXER__RPC_URL environment variable
-rpc_url = "wss://rpc-testnet.monadinfra.com"
+# Can be overridden with INDEXER__RPC_URLS environment variable
+rpc_urls = ["wss://rpc-testnet.monadinfra.com"]
 
 # PostgreSQL database connection settings
 # Can be overridden with INDEXER__DB_HOST, INDEXER__DB_PORT, INDEXER__DB_NAME environment variables
