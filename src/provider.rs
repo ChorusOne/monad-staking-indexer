@@ -14,10 +14,15 @@ use alloy::{
     rpc::types::Filter,
 };
 
+#[derive(Clone)]
 pub struct ReconnectProvider {
     urls: Vec<String>,
     watchdog_timeout: Duration,
-    provider: Option<RootProvider<PubSubFrontend>>,
+}
+
+pub struct ConnectedProvider {
+    provider: RootProvider<PubSubFrontend>,
+    watchdog_timeout: Duration,
 }
 
 impl ReconnectProvider {
@@ -27,15 +32,10 @@ impl ReconnectProvider {
         ReconnectProvider {
             urls,
             watchdog_timeout: Duration::from_secs(watchdog_timeout_secs),
-            provider: None,
         }
     }
 
-    pub async fn connect(&mut self, attempt: usize) -> std::result::Result<(), Metric> {
-        if self.provider.is_some() {
-            return Ok(());
-        }
-
+    pub async fn connect(&self, attempt: usize) -> std::result::Result<ConnectedProvider, Metric> {
         let url = &self.urls[attempt % self.urls.len()];
         debug!("Attempting to connect to RPC: {}", url);
 
@@ -45,8 +45,10 @@ impl ReconnectProvider {
         match tokio::time::timeout(connection_timeout, ProviderBuilder::new().on_ws(ws)).await {
             Ok(Ok(provider)) => {
                 info!("Successfully connected to RPC: {}", url);
-                self.provider = Some(provider);
-                Ok(())
+                Ok(ConnectedProvider {
+                    provider,
+                    watchdog_timeout: self.watchdog_timeout,
+                })
             }
             Ok(Err(e)) => {
                 error!("Failed to connect to {url}: {e:?}");
@@ -58,44 +60,34 @@ impl ReconnectProvider {
             }
         }
     }
+}
 
-    pub async fn historical_logs(
-        &mut self,
-        range: &Range<u64>,
-    ) -> Result<Vec<alloy::rpc::types::Log>> {
-        let provider = self.provider.as_ref().expect("Provider must be connected");
-
+impl ConnectedProvider {
+    pub async fn historical_logs(&self, range: &Range<u64>) -> Result<Vec<alloy::rpc::types::Log>> {
         let filter = Filter::new()
             .address(STAKING_CONTRACT_ADDRESS)
             .from_block(range.start)
             .to_block(range.end.saturating_sub(1));
 
-        provider.get_logs(&filter).await.map_err(Into::into)
+        self.provider.get_logs(&filter).await.map_err(Into::into)
     }
 
-    pub async fn stream_events(&mut self) -> Result<impl Stream<Item = alloy::rpc::types::Log>> {
-        let provider = self.provider.take().expect("Provider must be connected");
-
+    pub async fn stream_events(self) -> Result<impl Stream<Item = alloy::rpc::types::Log>> {
         let filter = Filter::new().address(STAKING_CONTRACT_ADDRESS);
-        let event_stream = provider.subscribe_logs(&filter).await?.into_stream();
+        let event_stream = self.provider.subscribe_logs(&filter).await?.into_stream();
 
         let watchdog_timeout = self.watchdog_timeout;
+        let provider_monitor = self.provider;
 
         Ok(stream! {
             let mut stream = event_stream;
-            let _provider = provider;
+            let _keep_alive = provider_monitor;
 
             loop {
                 match tokio::time::timeout(watchdog_timeout, stream.next()).await {
                     Ok(Some(log)) => yield log,
-                    Ok(None) => {
-                        drop(_provider);
-                        break;
-                    }
-                    Err(_) => {
-                        drop(_provider);
-                        break;
-                    }
+                    Ok(None) => break,
+                    Err(_) => break,
                 }
             }
         })

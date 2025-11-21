@@ -107,7 +107,7 @@ async fn periodic_gap_check(
 }
 
 async fn process_gaps_task(
-    mut reconnect_provider: ReconnectProvider,
+    reconnect_provider: ReconnectProvider,
     log_tx: mpsc::UnboundedSender<DbRequest>,
     mut gap_rx: mpsc::UnboundedReceiver<Range<u64>>,
     chunk_size: u64,
@@ -116,9 +116,9 @@ async fn process_gaps_task(
     let mut attempts = 0usize;
 
     while let Some(range) = gap_rx.recv().await {
-        loop {
+        let client = loop {
             match reconnect_provider.connect(attempts).await {
-                Ok(()) => break,
+                Ok(client) => break client,
                 Err(e) => {
                     attempts += 1;
                     error!("Gaps task connection failed: {e:?}");
@@ -126,7 +126,8 @@ async fn process_gaps_task(
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
-        }
+        };
+
         let chunks = chunk_range(range.clone(), chunk_size);
         if chunks.len() > 1 {
             info!(
@@ -141,7 +142,7 @@ async fn process_gaps_task(
             debug!("Backfilling chunk: blocks {:?}", chunk_range);
             let blocks_processed = chunk_range.end - chunk_range.start;
 
-            let res = reconnect_provider
+            let res = client
                 .historical_logs(chunk_range)
                 .await
                 .and_then(|logs| process_historical_logs(logs, log_tx.clone()));
@@ -167,7 +168,7 @@ async fn process_gaps_task(
 }
 
 async fn process_live_blocks(
-    mut reconnect_provider: ReconnectProvider,
+    reconnect_provider: ReconnectProvider,
     mut start_block: Option<u64>,
     tx: mpsc::UnboundedSender<DbRequest>,
     gap_tx: mpsc::UnboundedSender<Range<u64>>,
@@ -183,14 +184,19 @@ async fn process_live_blocks(
     info!("Starting live event stream from block {:?}", start_block);
 
     loop {
-        if let Err(e) = reconnect_provider.connect(attempts).await {
-            error!("Live blocks connection failed: {e:?}");
-            attempts += 1;
-            metrics_tx.send(e).unwrap();
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            continue;
-        }
-        let event_stream = match reconnect_provider.stream_events().await {
+        let client = loop {
+            match reconnect_provider.connect(attempts).await {
+                Ok(c) => break c,
+                Err(e) => {
+                    error!("Live blocks connection failed: {e:?}");
+                    attempts += 1;
+                    metrics_tx.send(e).unwrap();
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        };
+
+        let event_stream = match client.stream_events().await {
             Ok(stream) => stream,
             Err(e) => {
                 error!("Failed to start event stream: {:?}", e);
