@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
         .format_target(false)
         .init();
 
-    info!("Starting Monad Staking Indexer...");
+    info!("Config is {config:#?}");
 
     info!("Connecting to database...");
     let database_url = config

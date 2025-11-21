@@ -1,5 +1,6 @@
 use config::{Config as ConfigBuilder, ConfigError, Environment, File};
 use serde::Deserialize;
+use std::fmt;
 use std::path::Path;
 use tokio::fs;
 use vaultrs::client::{VaultClient, VaultClientSettingsBuilder};
@@ -21,10 +22,19 @@ pub struct Config {
     pub logging: LoggingConfig,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 pub struct DbCredentials {
     user: String,
     password: String,
+}
+
+impl fmt::Debug for DbCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DbCredentials")
+            .field("user", &self.user)
+            .field("password", &"REDACTED")
+            .finish()
+    }
 }
 
 fn default_k8s_mount() -> String {
@@ -105,7 +115,7 @@ impl Config {
                 .separator("__")
                 .prefix("INDEXER")
                 .list_separator(",")
-                .try_parsing(true)
+                .try_parsing(true),
         );
 
         let config = builder.build()?;
