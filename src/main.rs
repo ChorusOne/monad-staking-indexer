@@ -1,17 +1,11 @@
 use env_logger::TimestampPrecision;
+use monad_staking_indexer::provider::ReconnectProvider;
 use monad_staking_indexer::{
-    BlockBatch, DbRequest, STAKING_CONTRACT_ADDRESS, chunk_range, config::Config, db, events,
-    metrics, process_db_requests,
+    BlockBatch, DbRequest, chunk_range, config::Config, db, events, metrics, process_db_requests,
 };
 
 use std::ops::Range;
 
-use alloy::{
-    primitives::Address,
-    providers::{Provider, ProviderBuilder, RootProvider, WsConnect},
-    pubsub::PubSubFrontend,
-    rpc::types::Filter,
-};
 use eyre::Result;
 use futures_util::stream::StreamExt;
 use log::{debug, error, info};
@@ -43,12 +37,13 @@ async fn main() -> Result<()> {
     let max_block_on_startup = db::repository::get_max_block_number(&pool).await?;
     info!("Max block at startup {max_block_on_startup:?}");
 
-    info!("Creating RPC connections...");
-    let ws_live = WsConnect::new(&config.rpc_url);
-    let live_provider = ProviderBuilder::new().on_ws(ws_live).await?;
+    info!("Creating ReconnectProviders...");
+    let live_reconnect_provider =
+        ReconnectProvider::new(config.rpc_urls.clone(), config.watchdog_timeout_secs);
 
-    let ws_gaps = WsConnect::new(&config.rpc_url);
-    let gaps_provider = ProviderBuilder::new().on_ws(ws_gaps).await?;
+    let gaps_reconnect_provider =
+        ReconnectProvider::new(config.rpc_urls.clone(), config.watchdog_timeout_secs);
+
     let (gap_tx, gap_rx) = mpsc::unbounded_channel();
 
     let (db_tx, db_rx) = mpsc::unbounded_channel();
@@ -72,20 +67,19 @@ async fn main() -> Result<()> {
             db_tx.clone(),
         )),
         tokio::spawn(process_gaps_task(
-            gaps_provider,
-            STAKING_CONTRACT_ADDRESS,
+            gaps_reconnect_provider,
             db_tx.clone(),
             gap_rx,
-            metrics_tx.clone(),
             config.backfill_chunk_size,
+            metrics_tx.clone(),
         )),
         tokio::spawn(process_live_blocks(
-            live_provider,
-            STAKING_CONTRACT_ADDRESS,
+            live_reconnect_provider,
             max_block_on_startup,
             db_tx,
             gap_tx,
             config.db_batch_size,
+            metrics_tx.clone(),
         )),
     ];
 
@@ -113,14 +107,27 @@ async fn periodic_gap_check(
 }
 
 async fn process_gaps_task(
-    provider: RootProvider<PubSubFrontend>,
-    staking_contract_address: Address,
+    reconnect_provider: ReconnectProvider,
     log_tx: mpsc::UnboundedSender<DbRequest>,
     mut gap_rx: mpsc::UnboundedReceiver<Range<u64>>,
-    metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
     chunk_size: u64,
+    metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
 ) -> Result<()> {
+    let mut attempts = 0usize;
+
     while let Some(range) = gap_rx.recv().await {
+        let client = loop {
+            match reconnect_provider.connect(attempts).await {
+                Ok(client) => break client,
+                Err(e) => {
+                    attempts += 1;
+                    error!("Gaps task connection failed: {e:?}");
+                    metrics_tx.send(e).unwrap();
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        };
+
         let chunks = chunk_range(range.clone(), chunk_size);
         if chunks.len() > 1 {
             info!(
@@ -135,13 +142,11 @@ async fn process_gaps_task(
             debug!("Backfilling chunk: blocks {:?}", chunk_range);
             let blocks_processed = chunk_range.end - chunk_range.start;
 
-            let res = process_historical_blocks(
-                &provider,
-                staking_contract_address,
-                chunk_range,
-                log_tx.clone(),
-            )
-            .await;
+            let res = client
+                .historical_logs(chunk_range)
+                .await
+                .and_then(|logs| process_historical_logs(logs, log_tx.clone()));
+
             let metric = match res {
                 Ok(()) => {
                     debug!("Successfully backfilled {chunk_range:?}");
@@ -163,82 +168,97 @@ async fn process_gaps_task(
 }
 
 async fn process_live_blocks(
-    provider: RootProvider<PubSubFrontend>,
-    staking_contract_address: Address,
+    reconnect_provider: ReconnectProvider,
     mut start_block: Option<u64>,
     tx: mpsc::UnboundedSender<DbRequest>,
     gap_tx: mpsc::UnboundedSender<Range<u64>>,
     batch_size: usize,
+    metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
 ) -> Result<()> {
-    let filter = Filter::new().address(staking_contract_address);
-
-    info!("Starting live event stream from block {:?}", start_block);
-    let mut stream = provider.subscribe_logs(&filter).await?.into_stream();
-    info!("Got liveblock stream");
-
     let mut current_block_buffer: Vec<events::StakingEvent> = Vec::new();
     let mut current_block_meta: Option<events::BlockMeta> = None;
     let mut batch = BlockBatch::new();
     let mut block_count = 0;
+    let mut attempts = 0usize;
 
-    while let Some(log) = stream.next().await {
-        match events::extract_event(&log) {
-            Ok(Some(event)) => {
-                let event_block_num = event.block_meta().block_number;
+    info!("Starting live event stream from block {:?}", start_block);
 
-                if let Some(start) = start_block {
-                    if event_block_num > start {
-                        gap_tx.send(start..event_block_num).unwrap();
-                    }
-                    start_block = None;
-                }
-
-                if let Some(ref meta) = current_block_meta
-                    && meta.block_number != event_block_num
-                {
-                    batch.add_block_meta(meta.clone());
-                    for evt in current_block_buffer {
-                        batch.add_event(evt);
-                    }
-                    current_block_buffer = Vec::new();
-                    block_count += 1;
-                }
-
-                current_block_meta = Some(event.block_meta().clone());
-                current_block_buffer.push(event);
-
-                if block_count >= batch_size {
-                    tx.send(DbRequest::InsertCompleteBlocks(Box::new(std::mem::take(
-                        &mut batch,
-                    ))))
-                    .expect("Channel closed");
-                    batch = BlockBatch::new();
-                    block_count = 0;
+    loop {
+        let client = loop {
+            match reconnect_provider.connect(attempts).await {
+                Ok(c) => break c,
+                Err(e) => {
+                    error!("Live blocks connection failed: {e:?}");
+                    attempts += 1;
+                    metrics_tx.send(e).unwrap();
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
-            Ok(None) => (),
+        };
+
+        let event_stream = match client.stream_events().await {
+            Ok(stream) => stream,
             Err(e) => {
-                error!("Error extracting event: {}", e);
+                error!("Failed to start event stream: {:?}", e);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+
+        tokio::pin!(event_stream);
+
+        info!("Connected to event stream");
+
+        while let Some(log) = event_stream.next().await {
+            match events::extract_event(&log) {
+                Ok(Some(event)) => {
+                    let event_block_num = event.block_meta().block_number;
+
+                    if let Some(start) = start_block {
+                        if event_block_num > start {
+                            gap_tx.send(start..event_block_num).unwrap();
+                        }
+                        start_block = None;
+                    }
+
+                    if let Some(ref meta) = current_block_meta
+                        && meta.block_number != event_block_num
+                    {
+                        batch.add_block_meta(meta.clone());
+                        for evt in current_block_buffer.drain(..) {
+                            batch.add_event(evt);
+                        }
+                        block_count += 1;
+                    }
+
+                    current_block_meta = Some(event.block_meta().clone());
+                    current_block_buffer.push(event);
+
+                    if block_count >= batch_size {
+                        tx.send(DbRequest::InsertCompleteBlocks(Box::new(std::mem::take(
+                            &mut batch,
+                        ))))
+                        .expect("Channel closed");
+                        batch = BlockBatch::new();
+                        block_count = 0;
+                    }
+                }
+                Ok(None) => (),
+                Err(e) => {
+                    error!("Error extracting event: {}", e);
+                }
             }
         }
-    }
 
-    Ok(())
+        error!("Event stream closed (timeout or error), reconnecting...");
+        let _ = metrics_tx.send(metrics::Metric::RpcTimeout);
+    }
 }
 
-async fn process_historical_blocks(
-    provider: &RootProvider<PubSubFrontend>,
-    staking_contract_address: Address,
-    range: &Range<u64>,
+fn process_historical_logs(
+    mut logs: Vec<alloy::rpc::types::Log>,
     tx: mpsc::UnboundedSender<DbRequest>,
 ) -> Result<()> {
-    let filter = Filter::new()
-        .address(staking_contract_address)
-        .from_block(range.start)
-        .to_block(range.end.saturating_sub(1));
-
-    let mut logs = provider.get_logs(&filter).await?;
-
     logs.sort_by_key(|l| (l.block_number, l.transaction_index, l.log_index));
 
     let mut blocks_map: std::collections::HashMap<

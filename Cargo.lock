@@ -2687,6 +2687,7 @@ name = "monad-staking-indexer"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "async-stream",
  "axum",
  "bigdecimal",
  "config",

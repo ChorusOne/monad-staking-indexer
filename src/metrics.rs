@@ -13,6 +13,8 @@ pub enum Metric {
     FailedToInsert,
     InsertTimeout,
     DbConnected,
+    RpcTimeout,
+    RpcConnRefused,
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +26,8 @@ struct MetricsState {
     backfilled_blocks_ok: u64,
     backfilled_blocks_err: u64,
     db_connections: u64,
+    rpc_timeout_err: u64,
+    rpc_conn_refused_err: u64,
 }
 
 impl MetricsState {
@@ -36,6 +40,8 @@ impl MetricsState {
             insert_events_err: 0,
             insert_timeout_err: 0,
             db_connections: 0,
+            rpc_timeout_err: 0,
+            rpc_conn_refused_err: 0,
         }
     }
 
@@ -62,6 +68,12 @@ impl MetricsState {
             }
             Metric::DbConnected => {
                 self.db_connections += 1;
+            }
+            Metric::RpcTimeout => {
+                self.rpc_timeout_err += 1;
+            }
+            Metric::RpcConnRefused => {
+                self.rpc_conn_refused_err += 1;
             }
         }
     }
@@ -131,6 +143,25 @@ impl MetricsState {
             "staking_db_connections_total {}\n",
             self.db_connections
         ));
+
+        output.push_str(
+            "# HELP staking_rpc_timeout_err Number of RPC timeout events\n",
+        );
+        output.push_str("# TYPE staking_rpc_timeout_err counter\n");
+        output.push_str(&format!(
+            "staking_rpc_timeout_err {}\n",
+            self.rpc_timeout_err
+        ));
+
+        output.push_str(
+            "# HELP staking_rpc_conn_refused_err Number of RPC connection refused errors\n",
+        );
+        output.push_str("# TYPE staking_rpc_conn_refused_err counter\n");
+        output.push_str(&format!(
+            "staking_rpc_conn_refused_err {}\n",
+            self.rpc_conn_refused_err
+        ));
+
         output
     }
 }
