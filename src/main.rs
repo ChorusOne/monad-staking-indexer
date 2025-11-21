@@ -1,6 +1,7 @@
+use env_logger::TimestampPrecision;
 use monad_staking_indexer::{
-    DbRequest, STAKING_CONTRACT_ADDRESS, chunk_range, config::Config, db, events, metrics,
-    process_db_requests,
+    BlockBatch, DbRequest, STAKING_CONTRACT_ADDRESS, chunk_range, config::Config, db, events,
+    metrics, process_db_requests,
 };
 
 use std::ops::Range;
@@ -13,7 +14,7 @@ use alloy::{
 };
 use eyre::Result;
 use futures_util::stream::StreamExt;
-use log::{error, info};
+use log::{debug, error, info};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 
@@ -23,6 +24,7 @@ async fn main() -> Result<()> {
 
     env_logger::builder()
         .filter_level(config.parse_log_level())
+        .format_timestamp(Some(TimestampPrecision::Millis))
         .format_target(false)
         .init();
 
@@ -33,7 +35,8 @@ async fn main() -> Result<()> {
         .connection_string()
         .await
         .expect("Failed to build database connection string");
-    let pool = db::create_pool(&database_url).await?;
+    let (metrics_tx, metrics_rx) = mpsc::unbounded_channel();
+    let pool = db::create_pool(&database_url, metrics_tx.clone()).await?;
     info!("Database connected");
 
     info!("Getting current indexing state...");
@@ -49,7 +52,6 @@ async fn main() -> Result<()> {
     let (gap_tx, gap_rx) = mpsc::unbounded_channel();
 
     let (db_tx, db_rx) = mpsc::unbounded_channel();
-    let (metrics_tx, metrics_rx) = mpsc::unbounded_channel();
     let (metrics_request_tx, metrics_request_rx) = mpsc::unbounded_channel();
 
     let tasks = vec![
@@ -63,6 +65,7 @@ async fn main() -> Result<()> {
             db_rx,
             gap_tx.clone(),
             metrics_tx.clone(),
+            config.db_operation_timeout_secs,
         )),
         tokio::spawn(periodic_gap_check(
             config.gap_check_interval_secs,
@@ -82,6 +85,7 @@ async fn main() -> Result<()> {
             max_block_on_startup,
             db_tx,
             gap_tx,
+            config.db_batch_size,
         )),
     ];
 
@@ -128,7 +132,7 @@ async fn process_gaps_task(
         }
 
         for chunk_range in chunks.iter() {
-            info!("Backfilling chunk: blocks {:?}", chunk_range);
+            debug!("Backfilling chunk: blocks {:?}", chunk_range);
             let blocks_processed = chunk_range.end - chunk_range.start;
 
             let res = process_historical_blocks(
@@ -140,7 +144,7 @@ async fn process_gaps_task(
             .await;
             let metric = match res {
                 Ok(()) => {
-                    info!("Successfully backfilled {chunk_range:?}");
+                    debug!("Successfully backfilled {chunk_range:?}");
                     metrics::Metric::BackfilledBlocks(blocks_processed)
                 }
                 Err(e) => {
@@ -164,6 +168,7 @@ async fn process_live_blocks(
     mut start_block: Option<u64>,
     tx: mpsc::UnboundedSender<DbRequest>,
     gap_tx: mpsc::UnboundedSender<Range<u64>>,
+    batch_size: usize,
 ) -> Result<()> {
     let filter = Filter::new().address(staking_contract_address);
 
@@ -171,16 +176,45 @@ async fn process_live_blocks(
     let mut stream = provider.subscribe_logs(&filter).await?.into_stream();
     info!("Got liveblock stream");
 
+    let mut current_block_buffer: Vec<events::StakingEvent> = Vec::new();
+    let mut current_block_meta: Option<events::BlockMeta> = None;
+    let mut batch = BlockBatch::new();
+    let mut block_count = 0;
+
     while let Some(log) = stream.next().await {
         match events::extract_event(&log) {
             Ok(Some(event)) => {
+                let event_block_num = event.block_meta().block_number;
+
                 if let Some(start) = start_block {
-                    let end = event.block_meta().block_number;
-                    gap_tx.send(start..end).unwrap();
+                    if event_block_num > start {
+                        gap_tx.send(start..event_block_num).unwrap();
+                    }
                     start_block = None;
                 }
-                tx.send(DbRequest::InsertStakingEvent(event))
+
+                if let Some(ref meta) = current_block_meta
+                    && meta.block_number != event_block_num
+                {
+                    batch.add_block_meta(meta.clone());
+                    for evt in current_block_buffer {
+                        batch.add_event(evt);
+                    }
+                    current_block_buffer = Vec::new();
+                    block_count += 1;
+                }
+
+                current_block_meta = Some(event.block_meta().clone());
+                current_block_buffer.push(event);
+
+                if block_count >= batch_size {
+                    tx.send(DbRequest::InsertCompleteBlocks(Box::new(std::mem::take(
+                        &mut batch,
+                    ))))
                     .expect("Channel closed");
+                    batch = BlockBatch::new();
+                    block_count = 0;
+                }
             }
             Ok(None) => (),
             Err(e) => {
@@ -203,13 +237,44 @@ async fn process_historical_blocks(
         .from_block(range.start)
         .to_block(range.end.saturating_sub(1));
 
-    let logs = provider.get_logs(&filter).await?;
+    let mut logs = provider.get_logs(&filter).await?;
+
+    logs.sort_by_key(|l| (l.block_number, l.transaction_index, l.log_index));
+
+    let mut blocks_map: std::collections::HashMap<
+        u64,
+        (events::BlockMeta, Vec<events::StakingEvent>),
+    > = std::collections::HashMap::new();
 
     for log in logs {
         if let Some(event) = events::extract_event(&log)? {
-            tx.send(DbRequest::InsertStakingEvent(event))
-                .expect("Channel closed");
+            let block_num = event.block_meta().block_number;
+            blocks_map
+                .entry(block_num)
+                .or_insert_with(|| (event.block_meta().clone(), Vec::new()))
+                .1
+                .push(event);
         }
+    }
+
+    let mut block_metas_and_events: Vec<(u64, events::BlockMeta, Vec<events::StakingEvent>)> =
+        blocks_map
+            .into_iter()
+            .map(|(num, (meta, events))| (num, meta, events))
+            .collect();
+    block_metas_and_events.sort_by_key(|(num, _, _)| *num);
+
+    let mut batch = BlockBatch::new();
+    for (_, meta, events) in block_metas_and_events {
+        batch.add_block_meta(meta);
+        for event in events {
+            batch.add_event(event);
+        }
+    }
+
+    if !batch.block_meta.is_empty() {
+        tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch)))
+            .expect("Channel closed");
     }
 
     Ok(())

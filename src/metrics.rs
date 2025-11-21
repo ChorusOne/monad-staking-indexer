@@ -7,11 +7,12 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Metric {
-    DuplicateEvent(StakingEventType),
-    InsertedEvent(StakingEventType),
+    InsertedEvents(HashMap<StakingEventType, (u64, u64)>),
     BackfilledBlocks(u64),
     FailedToBackfill(u64),
     FailedToInsert,
+    InsertTimeout,
+    DbConnected,
 }
 
 #[derive(Debug, Clone)]
@@ -19,8 +20,10 @@ struct MetricsState {
     inserted: HashMap<StakingEventType, u64>,
     duplicates: HashMap<StakingEventType, u64>,
     insert_events_err: u64,
+    insert_timeout_err: u64,
     backfilled_blocks_ok: u64,
     backfilled_blocks_err: u64,
+    db_connections: u64,
 }
 
 impl MetricsState {
@@ -31,16 +34,19 @@ impl MetricsState {
             backfilled_blocks_ok: 0,
             backfilled_blocks_err: 0,
             insert_events_err: 0,
+            insert_timeout_err: 0,
+            db_connections: 0,
         }
     }
 
     fn record(&mut self, metric: Metric) {
         match metric {
-            Metric::InsertedEvent(event_type) => {
-                *self.inserted.entry(event_type).or_insert(0) += 1;
-            }
-            Metric::DuplicateEvent(event_type) => {
-                *self.duplicates.entry(event_type).or_insert(0) += 1;
+            Metric::InsertedEvents(counts) => {
+                for (event_type, (inserted, total)) in counts {
+                    *self.inserted.entry(event_type).or_insert(0) += inserted;
+                    *self.duplicates.entry(event_type).or_insert(0) +=
+                        total.saturating_sub(inserted);
+                }
             }
             Metric::BackfilledBlocks(count) => {
                 self.backfilled_blocks_ok += count;
@@ -50,6 +56,12 @@ impl MetricsState {
             }
             Metric::FailedToInsert => {
                 self.insert_events_err += 1;
+            }
+            Metric::InsertTimeout => {
+                self.insert_timeout_err += 1;
+            }
+            Metric::DbConnected => {
+                self.db_connections += 1;
             }
         }
     }
@@ -96,10 +108,28 @@ impl MetricsState {
         output.push_str(
             "# HELP staking_insert_events_err Number of events that failed to be inserted\n",
         );
-        output.push_str("# TYPE staking_backfilled_blocks_err counter\n");
+        output.push_str("# TYPE staking_insert_events_err counter\n");
         output.push_str(&format!(
             "staking_insert_events_err {}\n",
             self.insert_events_err
+        ));
+
+        output.push_str(
+            "# HELP staking_insert_timeout_err Number of insert operations that timed out\n",
+        );
+        output.push_str("# TYPE staking_insert_timeout_err counter\n");
+        output.push_str(&format!(
+            "staking_insert_timeout_err {}\n",
+            self.insert_timeout_err
+        ));
+
+        output.push_str(
+            "# HELP staking_db_connections_total Total number of database connections established\n",
+        );
+        output.push_str("# TYPE staking_db_connections_total counter\n");
+        output.push_str(&format!(
+            "staking_db_connections_total {}\n",
+            self.db_connections
         ));
         output
     }

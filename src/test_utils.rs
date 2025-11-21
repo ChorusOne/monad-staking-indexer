@@ -26,7 +26,7 @@ pub fn spawn_process_event_logs(
 
     let pool_clone = pool.clone();
     tokio::spawn(async move {
-        if let Err(e) = process_db_requests(pool_clone, db_rx, gap_tx, metrics_tx).await {
+        if let Err(e) = process_db_requests(pool_clone, db_rx, gap_tx, metrics_tx, 30).await {
             eprintln!("process_db_requests failed: {}", e);
         }
     });
