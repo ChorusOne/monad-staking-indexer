@@ -100,7 +100,13 @@ impl Config {
             builder = builder.add_source(File::with_name(config_path));
         }
 
-        builder = builder.add_source(Environment::default().separator("__").prefix("INDEXER"));
+        builder = builder.add_source(
+            Environment::default()
+                .separator("__")
+                .prefix("INDEXER")
+                .list_separator(",")
+                .try_parsing(true)
+        );
 
         let config = builder.build()?;
         config.try_deserialize()
