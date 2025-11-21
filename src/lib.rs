@@ -5,6 +5,7 @@ pub mod error;
 pub mod events;
 pub mod metrics;
 pub mod pg_utils;
+pub mod provider;
 
 pub mod test_utils;
 

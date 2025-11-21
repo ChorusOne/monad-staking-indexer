@@ -6,7 +6,7 @@ use vaultrs::client::{VaultClient, VaultClientSettingsBuilder};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
-    pub rpc_url: String,
+    pub rpc_urls: Vec<String>,
     pub db_host: String,
     pub db_port: u16,
     pub db_name: String,
@@ -16,6 +16,7 @@ pub struct Config {
     pub gap_check_interval_secs: u64,
     pub db_batch_size: usize,
     pub db_operation_timeout_secs: u64,
+    pub watchdog_timeout_secs: u64,
     pub metrics: MetricsConfig,
     pub logging: LoggingConfig,
 }
@@ -90,6 +91,7 @@ impl Config {
             .set_default("gap_check_interval_secs", 300)?
             .set_default("db_batch_size", 10)?
             .set_default("db_operation_timeout_secs", 10)?
+            .set_default("watchdog_timeout_secs", 60)?
             .set_default("metrics.bind_address", "127.0.0.1")?
             .set_default("metrics.port", 9090)?
             .set_default("logging.level", "info")?;
