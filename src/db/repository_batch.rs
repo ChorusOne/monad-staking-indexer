@@ -2,7 +2,9 @@ use sqlx::PgPool;
 use tokio::time::Duration;
 
 use crate::db::repository::DbError;
-use crate::events::{self, BlockMeta, StakingEventType};
+use crate::events::{
+    self, BlockMeta, EventType, StakingEventType, SystemEventType, ValidatorEventType,
+};
 
 async fn insert_delegate_events_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -297,7 +299,7 @@ async fn insert_blocks_in_tx(
 async fn insert_many_blocks_inner(
     pool: &PgPool,
     batch: &crate::BlockBatch,
-) -> Result<std::collections::HashMap<StakingEventType, (u64, u64)>, DbError> {
+) -> Result<std::collections::HashMap<EventType, (u64, u64)>, DbError> {
     if batch.block_meta.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
@@ -306,36 +308,36 @@ async fn insert_many_blocks_inner(
 
     let mut result = std::collections::HashMap::new();
     result.insert(
-        StakingEventType::Delegate,
+        EventType::Staking(StakingEventType::Delegate),
         insert_delegate_events_in_tx(&mut tx, batch.delegate.as_slice()).await?,
     );
     result.insert(
-        StakingEventType::Undelegate,
+        EventType::Staking(StakingEventType::Undelegate),
         insert_undelegate_events_in_tx(&mut tx, batch.undelegate.as_slice()).await?,
     );
     result.insert(
-        StakingEventType::Withdraw,
+        EventType::Staking(StakingEventType::Withdraw),
         insert_withdraw_events_in_tx(&mut tx, batch.withdraw.as_slice()).await?,
     );
     result.insert(
-        StakingEventType::ClaimRewards,
+        EventType::Staking(StakingEventType::ClaimRewards),
         insert_claim_rewards_events_in_tx(&mut tx, batch.claim_rewards.as_slice()).await?,
     );
     result.insert(
-        StakingEventType::ValidatorRewarded,
+        EventType::System(SystemEventType::ValidatorRewarded),
         insert_validator_rewarded_events_in_tx(&mut tx, batch.validator_rewarded.as_slice())
             .await?,
     );
     result.insert(
-        StakingEventType::EpochChanged,
+        EventType::System(SystemEventType::EpochChanged),
         insert_epoch_changed_events_in_tx(&mut tx, batch.epoch_changed.as_slice()).await?,
     );
     result.insert(
-        StakingEventType::ValidatorCreated,
+        EventType::Validator(ValidatorEventType::Created),
         insert_validator_created_events_in_tx(&mut tx, batch.validator_created.as_slice()).await?,
     );
     result.insert(
-        StakingEventType::ValidatorStatusChanged,
+        EventType::Validator(ValidatorEventType::StatusChanged),
         insert_validator_status_changed_events_in_tx(
             &mut tx,
             batch.validator_status_changed.as_slice(),
@@ -343,7 +345,7 @@ async fn insert_many_blocks_inner(
         .await?,
     );
     result.insert(
-        StakingEventType::CommissionChanged,
+        EventType::Validator(ValidatorEventType::CommissionChanged),
         insert_commission_changed_events_in_tx(&mut tx, batch.commission_changed.as_slice())
             .await?,
     );
@@ -359,8 +361,35 @@ pub async fn insert_blocks(
     pool: &PgPool,
     batch: &crate::BlockBatch,
     timeout: Duration,
-) -> Result<std::collections::HashMap<StakingEventType, (u64, u64)>, DbError> {
+) -> Result<std::collections::HashMap<EventType, (u64, u64)>, DbError> {
     tokio::time::timeout(timeout, insert_many_blocks_inner(pool, batch))
         .await
         .map_err(|_| DbError::Sqlx(sqlx::Error::PoolTimedOut))?
+}
+
+pub async fn insert_transactions_in_tx(
+    pool: &PgPool,
+    tx_data: &[crate::transaction::EventTxData],
+) -> Result<u64, DbError> {
+    if tx_data.is_empty() {
+        return Ok(0);
+    }
+
+    let mut query_builder = sqlx::QueryBuilder::new(
+        "INSERT INTO events_tx_data (transaction_hash, block_number, event_type, access_list) ",
+    );
+
+    query_builder.push_values(tx_data, |mut b, data| {
+        let access_list_json = sqlx::types::Json(&data.access_list);
+        b.push_bind(&data.transaction_hash)
+            .push_bind(data.block_number as i64)
+            .push_bind(data.event_type)
+            .push_bind(access_list_json);
+    });
+
+    query_builder.push(" ON CONFLICT (transaction_hash) DO NOTHING");
+
+    let res = query_builder.build().execute(pool).await?;
+
+    Ok(res.rows_affected())
 }

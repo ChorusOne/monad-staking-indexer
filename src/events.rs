@@ -199,17 +199,33 @@ impl fmt::Display for CommissionChangedEvent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, sqlx::Type)]
+#[sqlx(type_name = "staking_event_type", rename_all = "snake_case")]
 pub enum StakingEventType {
     Delegate,
     Undelegate,
     Withdraw,
     ClaimRewards,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SystemEventType {
     ValidatorRewarded,
     EpochChanged,
-    ValidatorCreated,
-    ValidatorStatusChanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ValidatorEventType {
+    Created,
+    StatusChanged,
     CommissionChanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EventType {
+    Staking(StakingEventType),
+    System(SystemEventType),
+    Validator(ValidatorEventType),
 }
 
 #[derive(Debug, Clone)]
@@ -218,11 +234,36 @@ pub enum StakingEvent {
     Undelegate(UndelegateEvent),
     Withdraw(WithdrawEvent),
     ClaimRewards(ClaimRewardsEvent),
+}
+
+#[derive(Debug, Clone)]
+pub enum SystemEvent {
     ValidatorRewarded(ValidatorRewardedEvent),
     EpochChanged(EpochChangedEvent),
-    ValidatorCreated(ValidatorCreatedEvent),
-    ValidatorStatusChanged(ValidatorStatusChangedEvent),
+}
+
+#[derive(Debug, Clone)]
+pub enum ValidatorEvent {
+    Created(ValidatorCreatedEvent),
+    StatusChanged(ValidatorStatusChangedEvent),
     CommissionChanged(CommissionChangedEvent),
+}
+
+#[derive(Debug, Clone)]
+pub enum Event {
+    Staking(StakingEvent),
+    System(SystemEvent),
+    Validator(ValidatorEvent),
+}
+
+impl fmt::Display for Event {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Event::Staking(e) => write!(f, "{}", e),
+            Event::System(e) => write!(f, "{}", e),
+            Event::Validator(e) => write!(f, "{}", e),
+        }
+    }
 }
 
 impl fmt::Display for StakingEvent {
@@ -232,11 +273,35 @@ impl fmt::Display for StakingEvent {
             StakingEvent::Undelegate(e) => write!(f, "{}", e),
             StakingEvent::Withdraw(e) => write!(f, "{}", e),
             StakingEvent::ClaimRewards(e) => write!(f, "{}", e),
-            StakingEvent::ValidatorRewarded(e) => write!(f, "{}", e),
-            StakingEvent::EpochChanged(e) => write!(f, "{}", e),
-            StakingEvent::ValidatorCreated(e) => write!(f, "{}", e),
-            StakingEvent::ValidatorStatusChanged(e) => write!(f, "{}", e),
-            StakingEvent::CommissionChanged(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl fmt::Display for SystemEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SystemEvent::ValidatorRewarded(e) => write!(f, "{}", e),
+            SystemEvent::EpochChanged(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl fmt::Display for ValidatorEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidatorEvent::Created(e) => write!(f, "{}", e),
+            ValidatorEvent::StatusChanged(e) => write!(f, "{}", e),
+            ValidatorEvent::CommissionChanged(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl fmt::Display for EventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EventType::Staking(t) => write!(f, "{}", t),
+            EventType::System(t) => write!(f, "{}", t),
+            EventType::Validator(t) => write!(f, "{}", t),
         }
     }
 }
@@ -248,28 +313,60 @@ impl fmt::Display for StakingEventType {
             StakingEventType::Undelegate => write!(f, "Undelegate"),
             StakingEventType::Withdraw => write!(f, "Withdraw"),
             StakingEventType::ClaimRewards => write!(f, "ClaimRewards"),
-            StakingEventType::ValidatorRewarded => write!(f, "ValidatorRewarded"),
-            StakingEventType::EpochChanged => write!(f, "EpochChanged"),
-            StakingEventType::ValidatorCreated => write!(f, "ValidatorCreated"),
-            StakingEventType::ValidatorStatusChanged => write!(f, "ValidatorStatusChanged"),
-            StakingEventType::CommissionChanged => write!(f, "CommissionChanged"),
         }
     }
 }
 
-impl StakingEventType {
-    pub fn all_types() -> Vec<StakingEventType> {
+impl fmt::Display for SystemEventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SystemEventType::ValidatorRewarded => write!(f, "ValidatorRewarded"),
+            SystemEventType::EpochChanged => write!(f, "EpochChanged"),
+        }
+    }
+}
+
+impl fmt::Display for ValidatorEventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidatorEventType::Created => write!(f, "ValidatorCreated"),
+            ValidatorEventType::StatusChanged => write!(f, "ValidatorStatusChanged"),
+            ValidatorEventType::CommissionChanged => write!(f, "CommissionChanged"),
+        }
+    }
+}
+
+impl EventType {
+    pub fn all_types() -> Vec<EventType> {
         vec![
-            StakingEventType::Delegate,
-            StakingEventType::Undelegate,
-            StakingEventType::Withdraw,
-            StakingEventType::ClaimRewards,
-            StakingEventType::ValidatorRewarded,
-            StakingEventType::EpochChanged,
-            StakingEventType::ValidatorCreated,
-            StakingEventType::ValidatorStatusChanged,
-            StakingEventType::CommissionChanged,
+            EventType::Staking(StakingEventType::Delegate),
+            EventType::Staking(StakingEventType::Undelegate),
+            EventType::Staking(StakingEventType::Withdraw),
+            EventType::Staking(StakingEventType::ClaimRewards),
+            EventType::System(SystemEventType::ValidatorRewarded),
+            EventType::System(SystemEventType::EpochChanged),
+            EventType::Validator(ValidatorEventType::Created),
+            EventType::Validator(ValidatorEventType::StatusChanged),
+            EventType::Validator(ValidatorEventType::CommissionChanged),
         ]
+    }
+}
+
+impl Event {
+    pub fn event_type(&self) -> EventType {
+        match self {
+            Event::Staking(e) => EventType::Staking(e.event_type()),
+            Event::System(e) => EventType::System(e.event_type()),
+            Event::Validator(e) => EventType::Validator(e.event_type()),
+        }
+    }
+
+    pub fn block_meta(&self) -> &BlockMeta {
+        match self {
+            Event::Staking(e) => e.block_meta(),
+            Event::System(e) => e.block_meta(),
+            Event::Validator(e) => e.block_meta(),
+        }
     }
 }
 
@@ -280,11 +377,6 @@ impl StakingEvent {
             StakingEvent::Undelegate(_) => StakingEventType::Undelegate,
             StakingEvent::Withdraw(_) => StakingEventType::Withdraw,
             StakingEvent::ClaimRewards(_) => StakingEventType::ClaimRewards,
-            StakingEvent::ValidatorRewarded(_) => StakingEventType::ValidatorRewarded,
-            StakingEvent::EpochChanged(_) => StakingEventType::EpochChanged,
-            StakingEvent::ValidatorCreated(_) => StakingEventType::ValidatorCreated,
-            StakingEvent::ValidatorStatusChanged(_) => StakingEventType::ValidatorStatusChanged,
-            StakingEvent::CommissionChanged(_) => StakingEventType::CommissionChanged,
         }
     }
 
@@ -294,16 +386,63 @@ impl StakingEvent {
             StakingEvent::Undelegate(e) => &e.block_meta,
             StakingEvent::Withdraw(e) => &e.block_meta,
             StakingEvent::ClaimRewards(e) => &e.block_meta,
-            StakingEvent::ValidatorRewarded(e) => &e.block_meta,
-            StakingEvent::EpochChanged(e) => &e.block_meta,
-            StakingEvent::ValidatorCreated(e) => &e.block_meta,
-            StakingEvent::ValidatorStatusChanged(e) => &e.block_meta,
-            StakingEvent::CommissionChanged(e) => &e.block_meta,
+        }
+    }
+
+    pub fn val_id(&self) -> u64 {
+        match self {
+            StakingEvent::Delegate(e) => e.val_id,
+            StakingEvent::Undelegate(e) => e.val_id,
+            StakingEvent::Withdraw(e) => e.val_id,
+            StakingEvent::ClaimRewards(e) => e.val_id,
+        }
+    }
+
+    pub fn tx_hash(&self) -> &str {
+        match self {
+            StakingEvent::Delegate(e) => &e.tx_meta.transaction_hash,
+            StakingEvent::Undelegate(e) => &e.tx_meta.transaction_hash,
+            StakingEvent::Withdraw(e) => &e.tx_meta.transaction_hash,
+            StakingEvent::ClaimRewards(e) => &e.tx_meta.transaction_hash,
         }
     }
 }
 
-pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
+impl SystemEvent {
+    pub fn event_type(&self) -> SystemEventType {
+        match self {
+            SystemEvent::ValidatorRewarded(_) => SystemEventType::ValidatorRewarded,
+            SystemEvent::EpochChanged(_) => SystemEventType::EpochChanged,
+        }
+    }
+
+    pub fn block_meta(&self) -> &BlockMeta {
+        match self {
+            SystemEvent::ValidatorRewarded(e) => &e.block_meta,
+            SystemEvent::EpochChanged(e) => &e.block_meta,
+        }
+    }
+}
+
+impl ValidatorEvent {
+    pub fn event_type(&self) -> ValidatorEventType {
+        match self {
+            ValidatorEvent::Created(_) => ValidatorEventType::Created,
+            ValidatorEvent::StatusChanged(_) => ValidatorEventType::StatusChanged,
+            ValidatorEvent::CommissionChanged(_) => ValidatorEventType::CommissionChanged,
+        }
+    }
+
+    pub fn block_meta(&self) -> &BlockMeta {
+        match self {
+            ValidatorEvent::Created(e) => &e.block_meta,
+            ValidatorEvent::StatusChanged(e) => &e.block_meta,
+            ValidatorEvent::CommissionChanged(e) => &e.block_meta,
+        }
+    }
+}
+
+pub fn extract_event(log: &Log) -> Result<Option<Event>> {
     let block_number = log
         .block_number
         .ok_or_else(|| eyre::eyre!("Missing block number"))?;
@@ -343,53 +482,61 @@ pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
     match *topic0 {
         StakingPrecompile::Delegate::SIGNATURE_HASH => {
             let decoded = StakingPrecompile::Delegate::decode_log(&inner_log, true)?;
-            Ok(Some(StakingEvent::Delegate(DelegateEvent {
-                val_id: decoded.valId,
-                delegator: hex::encode(decoded.delegator),
-                amount: u256_to_bigdecimal(decoded.amount),
-                activation_epoch: decoded.activationEpoch,
-                block_meta,
-                tx_meta,
-            })))
+            Ok(Some(Event::Staking(StakingEvent::Delegate(
+                DelegateEvent {
+                    val_id: decoded.valId,
+                    delegator: hex::encode(decoded.delegator),
+                    amount: u256_to_bigdecimal(decoded.amount),
+                    activation_epoch: decoded.activationEpoch,
+                    block_meta,
+                    tx_meta,
+                },
+            ))))
         }
         StakingPrecompile::Undelegate::SIGNATURE_HASH => {
             let decoded = StakingPrecompile::Undelegate::decode_log(&inner_log, true)?;
-            Ok(Some(StakingEvent::Undelegate(UndelegateEvent {
-                val_id: decoded.valId,
-                delegator: hex::encode(decoded.delegator),
-                withdrawal_id: decoded.withdrawal_id as i16,
-                amount: u256_to_bigdecimal(decoded.amount),
-                activation_epoch: decoded.activationEpoch,
-                block_meta,
-                tx_meta,
-            })))
+            Ok(Some(Event::Staking(StakingEvent::Undelegate(
+                UndelegateEvent {
+                    val_id: decoded.valId,
+                    delegator: hex::encode(decoded.delegator),
+                    withdrawal_id: decoded.withdrawal_id as i16,
+                    amount: u256_to_bigdecimal(decoded.amount),
+                    activation_epoch: decoded.activationEpoch,
+                    block_meta,
+                    tx_meta,
+                },
+            ))))
         }
         StakingPrecompile::Withdraw::SIGNATURE_HASH => {
             let decoded = StakingPrecompile::Withdraw::decode_log(&inner_log, true)?;
-            Ok(Some(StakingEvent::Withdraw(WithdrawEvent {
-                val_id: decoded.valId,
-                delegator: hex::encode(decoded.delegator),
-                withdrawal_id: decoded.withdrawal_id as i16,
-                amount: u256_to_bigdecimal(decoded.amount),
-                activation_epoch: decoded.activationEpoch,
-                block_meta,
-                tx_meta,
-            })))
+            Ok(Some(Event::Staking(StakingEvent::Withdraw(
+                WithdrawEvent {
+                    val_id: decoded.valId,
+                    delegator: hex::encode(decoded.delegator),
+                    withdrawal_id: decoded.withdrawal_id as i16,
+                    amount: u256_to_bigdecimal(decoded.amount),
+                    activation_epoch: decoded.activationEpoch,
+                    block_meta,
+                    tx_meta,
+                },
+            ))))
         }
         StakingPrecompile::ClaimRewards::SIGNATURE_HASH => {
             let decoded = StakingPrecompile::ClaimRewards::decode_log(&inner_log, true)?;
-            Ok(Some(StakingEvent::ClaimRewards(ClaimRewardsEvent {
-                val_id: decoded.valId,
-                delegator: hex::encode(decoded.delegator),
-                amount: u256_to_bigdecimal(decoded.amount),
-                epoch: decoded.epoch,
-                block_meta,
-                tx_meta,
-            })))
+            Ok(Some(Event::Staking(StakingEvent::ClaimRewards(
+                ClaimRewardsEvent {
+                    val_id: decoded.valId,
+                    delegator: hex::encode(decoded.delegator),
+                    amount: u256_to_bigdecimal(decoded.amount),
+                    epoch: decoded.epoch,
+                    block_meta,
+                    tx_meta,
+                },
+            ))))
         }
         StakingPrecompile::ValidatorRewarded::SIGNATURE_HASH => {
             let decoded = StakingPrecompile::ValidatorRewarded::decode_log(&inner_log, true)?;
-            Ok(Some(StakingEvent::ValidatorRewarded(
+            Ok(Some(Event::System(SystemEvent::ValidatorRewarded(
                 ValidatorRewardedEvent {
                     validator_id: decoded.validatorId,
                     from: hex::encode(decoded.from),
@@ -398,20 +545,22 @@ pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
                     block_meta,
                     tx_meta,
                 },
-            )))
+            ))))
         }
         StakingPrecompile::EpochChanged::SIGNATURE_HASH => {
             let decoded = StakingPrecompile::EpochChanged::decode_log(&inner_log, true)?;
-            Ok(Some(StakingEvent::EpochChanged(EpochChangedEvent {
-                old_epoch: decoded.oldEpoch,
-                new_epoch: decoded.newEpoch,
-                block_meta,
-                tx_meta,
-            })))
+            Ok(Some(Event::System(SystemEvent::EpochChanged(
+                EpochChangedEvent {
+                    old_epoch: decoded.oldEpoch,
+                    new_epoch: decoded.newEpoch,
+                    block_meta,
+                    tx_meta,
+                },
+            ))))
         }
         StakingPrecompile::ValidatorCreated::SIGNATURE_HASH => {
             let decoded = StakingPrecompile::ValidatorCreated::decode_log(&inner_log, true)?;
-            Ok(Some(StakingEvent::ValidatorCreated(
+            Ok(Some(Event::Validator(ValidatorEvent::Created(
                 ValidatorCreatedEvent {
                     validator_id: decoded.validatorId,
                     auth_address: hex::encode(decoded.authAddress),
@@ -419,22 +568,22 @@ pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
                     block_meta,
                     tx_meta,
                 },
-            )))
+            ))))
         }
         StakingPrecompile::ValidatorStatusChanged::SIGNATURE_HASH => {
             let decoded = StakingPrecompile::ValidatorStatusChanged::decode_log(&inner_log, true)?;
-            Ok(Some(StakingEvent::ValidatorStatusChanged(
+            Ok(Some(Event::Validator(ValidatorEvent::StatusChanged(
                 ValidatorStatusChangedEvent {
                     validator_id: decoded.validatorId,
                     flags: decoded.flags,
                     block_meta,
                     tx_meta,
                 },
-            )))
+            ))))
         }
         StakingPrecompile::CommissionChanged::SIGNATURE_HASH => {
             let decoded = StakingPrecompile::CommissionChanged::decode_log(&inner_log, true)?;
-            Ok(Some(StakingEvent::CommissionChanged(
+            Ok(Some(Event::Validator(ValidatorEvent::CommissionChanged(
                 CommissionChangedEvent {
                     validator_id: decoded.validatorId,
                     old_commission: u256_to_bigdecimal(decoded.oldCommission),
@@ -442,7 +591,7 @@ pub fn extract_event(log: &Log) -> Result<Option<StakingEvent>> {
                     block_meta,
                     tx_meta,
                 },
-            )))
+            ))))
         }
         _ => Ok(None),
     }

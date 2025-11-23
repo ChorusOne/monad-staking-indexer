@@ -1,7 +1,7 @@
 pub mod repository;
 mod repository_batch;
 
-pub use repository_batch::insert_blocks;
+pub use repository_batch::{insert_blocks, insert_transactions_in_tx};
 
 use crate::metrics::Metric;
 use eyre::Result;
@@ -9,7 +9,10 @@ use log::info;
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use tokio::sync::mpsc;
 
-pub async fn create_pool(database_url: &str, metrics_tx: mpsc::UnboundedSender<Metric>) -> Result<PgPool> {
+pub async fn create_pool(
+    database_url: &str,
+    metrics_tx: mpsc::UnboundedSender<Metric>,
+) -> Result<PgPool> {
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .after_connect(move |_conn, _meta| {

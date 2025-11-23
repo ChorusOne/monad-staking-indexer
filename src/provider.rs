@@ -63,6 +63,18 @@ impl ReconnectProvider {
 }
 
 impl ConnectedProvider {
+    pub async fn get_transaction(
+        &self,
+        hash: &str,
+    ) -> Result<Option<alloy::rpc::types::Transaction>> {
+        let hash_bytes = hex::decode(hash)?;
+        let tx_hash = alloy::primitives::FixedBytes::from_slice(&hash_bytes);
+        self.provider
+            .get_transaction_by_hash(tx_hash)
+            .await
+            .map_err(Into::into)
+    }
+
     pub async fn historical_logs(&self, range: &Range<u64>) -> Result<Vec<alloy::rpc::types::Log>> {
         let filter = Filter::new()
             .address(STAKING_CONTRACT_ADDRESS)

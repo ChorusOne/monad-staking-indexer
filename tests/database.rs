@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use monad_staking_indexer::{
-    BlockBatch, DbRequest, db,
-    events::{self, BlockMeta, StakingEvent, StakingEventType},
+    BackfillWork, BlockBatch, DbRequest, db,
+    events::{self, BlockMeta, Event, EventType, StakingEvent, StakingEventType},
     metrics, pg_utils, test_utils,
 };
 
@@ -11,7 +11,7 @@ fn process_single_block() {
     pg_utils::with_postgres_and_schema_async(|pool| async move {
         test_utils::init_test_logger();
 
-        let (tx, mut gaps_rx, mut metrics_rx) = test_utils::spawn_process_event_logs(&pool);
+        let (tx, mut backfill_rx, mut metrics_rx) = test_utils::spawn_process_event_logs(&pool);
 
         let delegate = events::DelegateEvent {
             val_id: 1,
@@ -31,14 +31,17 @@ fn process_single_block() {
 
         let mut batch = BlockBatch::new();
         batch.add_block_meta(delegate.block_meta.clone());
-        batch.add_event(StakingEvent::Delegate(delegate));
+        batch.add_event(Event::Staking(StakingEvent::Delegate(delegate)));
         tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch)))
             .unwrap();
 
         let got = metrics_rx.recv().await.unwrap();
 
         if let metrics::Metric::InsertedEvents(hm) = got {
-            assert_eq!(hm.get(&StakingEventType::Delegate), Some(&(1, 1)));
+            assert_eq!(
+                hm.get(&EventType::Staking(StakingEventType::Delegate)),
+                Some(&(1, 1))
+            );
         } else {
             panic!("unexpected");
         };
@@ -46,7 +49,7 @@ fn process_single_block() {
         tx.send(DbRequest::GetBlockGaps).unwrap();
 
         drop(tx);
-        assert_eq!(gaps_rx.recv().await, None);
+        assert_eq!(backfill_rx.recv().await, None);
 
         Ok(())
     })
@@ -58,7 +61,7 @@ fn processes_non_consecutive_blocks() {
     pg_utils::with_postgres_and_schema_async(|pool| async move {
         test_utils::init_test_logger();
 
-        let (tx, mut gaps_rx, mut metrics_rx) = test_utils::spawn_process_event_logs(&pool);
+        let (tx, mut backfill_rx, mut metrics_rx) = test_utils::spawn_process_event_logs(&pool);
 
         let delegate = events::DelegateEvent {
             val_id: 1,
@@ -82,14 +85,16 @@ fn processes_non_consecutive_blocks() {
 
         let mut batch1 = BlockBatch::new();
         batch1.add_block_meta(delegate.block_meta.clone());
-        batch1.add_event(StakingEvent::Delegate(delegate));
+        batch1.add_event(Event::Staking(StakingEvent::Delegate(delegate)));
 
         let mut batch2 = BlockBatch::new();
         batch2.add_block_meta(delegate2.block_meta.clone());
-        batch2.add_event(StakingEvent::Delegate(delegate2));
+        batch2.add_event(Event::Staking(StakingEvent::Delegate(delegate2)));
 
-        tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch1))).unwrap();
-        tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch2))).unwrap();
+        tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch1)))
+            .unwrap();
+        tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch2)))
+            .unwrap();
 
         tx.send(DbRequest::GetBlockGaps).unwrap();
         drop(tx);
@@ -97,11 +102,16 @@ fn processes_non_consecutive_blocks() {
         metrics_rx.recv().await.unwrap();
         metrics_rx.recv().await.unwrap();
 
-        let gap = gaps_rx.recv().await.unwrap();
-        assert_eq!(gap.start, 101);
-        assert_eq!(gap.end, 200);
+        let gap = backfill_rx.recv().await.unwrap();
+        match gap {
+            BackfillWork::BlockGap(range) => {
+                assert_eq!(range.start, 101);
+                assert_eq!(range.end, 200);
+            }
+            _ => panic!("Expected BlockGap"),
+        }
 
-        assert!(gaps_rx.recv().await.is_none());
+        assert!(backfill_rx.recv().await.is_none());
 
         Ok(())
     })
@@ -111,7 +121,7 @@ fn processes_non_consecutive_blocks() {
 async fn insert_blockmeta(
     pool: &sqlx::PgPool,
     meta: &BlockMeta,
-) -> Result<std::collections::HashMap<StakingEventType, (u64, u64)>, db::repository::DbError> {
+) -> Result<std::collections::HashMap<EventType, (u64, u64)>, db::repository::DbError> {
     let mut batch = BlockBatch::new();
     batch.add_block_meta(meta.clone());
     db::insert_blocks(pool, &batch, Duration::from_secs(1)).await
