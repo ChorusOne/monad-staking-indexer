@@ -387,7 +387,7 @@ pub async fn insert_transactions_in_tx(
             .push_bind(access_list_json);
     });
 
-    query_builder.push(" ON CONFLICT (transaction_hash) DO NOTHING");
+    query_builder.push(" ON CONFLICT (transaction_hash, event_type) DO NOTHING");
 
     let res = query_builder.build().execute(pool).await?;
 
