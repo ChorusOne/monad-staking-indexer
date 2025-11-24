@@ -127,7 +127,7 @@ async fn process_block_gap(
     validator_filter: &std::collections::HashSet<u64>,
     chunk_size: u64,
     metrics_tx: &mpsc::UnboundedSender<metrics::Metric>,
-) {
+) -> Result<()> {
     let chunks = chunk_range(range.clone(), chunk_size);
     if chunks.len() > 1 {
         info!(
@@ -138,6 +138,8 @@ async fn process_block_gap(
         );
     }
 
+    let mut had_error = false;
+
     for chunk_range in chunks.iter() {
         debug!("Backfilling chunk: blocks {:?}", chunk_range);
         let blocks_processed = chunk_range.end - chunk_range.start;
@@ -146,13 +148,14 @@ async fn process_block_gap(
             process_historical_logs(logs, log_tx.clone(), tx_fetch_tx, validator_filter)
         });
 
-        let metric = match res {
+        let metric = match &res {
             Ok(()) => {
                 debug!("Successfully backfilled {chunk_range:?}");
                 metrics::Metric::BackfilledBlocks(blocks_processed)
             }
             Err(e) => {
                 error!("Failed to backfill {chunk_range:?}: {e:?}");
+                had_error = true;
                 metrics::Metric::FailedToBackfill(blocks_processed)
             }
         };
@@ -162,14 +165,20 @@ async fn process_block_gap(
         "Finished backfilling range: {range:?} ({} blocks)",
         range.end - range.start
     );
+
+    if had_error {
+        Err(eyre::eyre!("One or more chunks failed in range {range:?}"))
+    } else {
+        Ok(())
+    }
 }
 
 async fn process_transaction_fetch(
     client: &monad_staking_indexer::provider::ConnectedProvider,
-    request: monad_staking_indexer::TransactionFetchRequest,
+    request: &monad_staking_indexer::TransactionFetchRequest,
     db_tx: &mpsc::UnboundedSender<DbRequest>,
     metrics_tx: &mpsc::UnboundedSender<metrics::Metric>,
-) {
+) -> Result<()> {
     match client.get_transaction(&request.transaction_hash).await {
         Ok(Some(tx)) => {
             let access_list = transaction::extract_access_list(&tx);
@@ -180,10 +189,15 @@ async fn process_transaction_fetch(
                 access_list,
             };
             let _ = db_tx.send(DbRequest::InsertTransactions(vec![tx_data]));
+            Ok(())
         }
         Ok(None) => {
             error!("Transaction not found: {}", request.transaction_hash);
             let _ = metrics_tx.send(metrics::Metric::TransactionFetchFailed(1));
+            Err(eyre::eyre!(
+                "Transaction not found: {}",
+                request.transaction_hash
+            ))
         }
         Err(e) => {
             error!(
@@ -191,12 +205,13 @@ async fn process_transaction_fetch(
                 request.transaction_hash, e
             );
             let _ = metrics_tx.send(metrics::Metric::TransactionFetchFailed(1));
+            Err(e)
         }
     }
 }
 
 async fn process_backfill_task(
-    reconnect_provider: ReconnectProvider,
+    mut reconnect_provider: ReconnectProvider,
     mut backfill_rx: mpsc::UnboundedReceiver<BackfillWork>,
     backfill_tx: mpsc::UnboundedSender<BackfillWork>,
     db_tx: mpsc::UnboundedSender<DbRequest>,
@@ -204,36 +219,32 @@ async fn process_backfill_task(
     validator_filter: std::collections::HashSet<u64>,
     metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
 ) -> Result<()> {
-    let mut attempts = 0usize;
+    let mut client = reconnect_provider.connect(&metrics_tx).await;
 
     while let Some(work) = backfill_rx.recv().await {
-        let client = loop {
-            match reconnect_provider.connect(attempts).await {
-                Ok(client) => break client,
-                Err(e) => {
-                    attempts += 1;
-                    error!("Backfill task connection failed: {e:?}");
-                    metrics_tx.send(e).unwrap();
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            }
-        };
-
-        match work {
+        let result = match &work {
             BackfillWork::BlockGap(range) => {
                 process_block_gap(
                     &client,
-                    range,
+                    range.clone(),
                     &db_tx,
                     &backfill_tx,
                     &validator_filter,
                     chunk_size,
                     &metrics_tx,
                 )
-                .await;
+                .await
             }
             BackfillWork::TransactionFetch(request) => {
-                process_transaction_fetch(&client, request, &db_tx, &metrics_tx).await;
+                process_transaction_fetch(&client, request, &db_tx, &metrics_tx).await
+            }
+        };
+
+        match result {
+            Ok(()) => continue,
+            Err(e) => {
+                error!("Backfill work failed: {e:?}, reconnecting...");
+                client = reconnect_provider.connect(&metrics_tx).await;
             }
         }
     }
@@ -242,7 +253,7 @@ async fn process_backfill_task(
 }
 
 async fn process_live_blocks(
-    reconnect_provider: ReconnectProvider,
+    mut reconnect_provider: ReconnectProvider,
     mut start_block: Option<u64>,
     tx: mpsc::UnboundedSender<DbRequest>,
     backfill_tx: mpsc::UnboundedSender<monad_staking_indexer::BackfillWork>,
@@ -254,22 +265,11 @@ async fn process_live_blocks(
     let mut current_block_meta: Option<events::BlockMeta> = None;
     let mut batch = BlockBatch::new();
     let mut block_count = 0;
-    let mut attempts = 0usize;
 
     info!("Starting live event stream from block {:?}", start_block);
 
     loop {
-        let client = loop {
-            match reconnect_provider.connect(attempts).await {
-                Ok(c) => break c,
-                Err(e) => {
-                    error!("Live blocks connection failed: {e:?}");
-                    attempts += 1;
-                    metrics_tx.send(e).unwrap();
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            }
-        };
+        let client = reconnect_provider.connect(&metrics_tx).await;
 
         let event_stream = match client.stream_events().await {
             Ok(stream) => stream,
