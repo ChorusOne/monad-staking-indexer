@@ -1,4 +1,4 @@
-use crate::events::StakingEventType;
+use crate::events::EventType;
 use axum::response::IntoResponse;
 use eyre::Result;
 use log::info;
@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Metric {
-    InsertedEvents(HashMap<StakingEventType, (u64, u64)>),
+    InsertedEvents(HashMap<EventType, (u64, u64)>),
     BackfilledBlocks(u64),
     FailedToBackfill(u64),
     FailedToInsert,
@@ -15,12 +15,15 @@ pub enum Metric {
     DbConnected,
     RpcTimeout,
     RpcConnRefused,
+    TransactionsFetched(u64),
+    TransactionFetchFailed(u64),
+    TransactionGapsFound(u64),
 }
 
 #[derive(Debug, Clone)]
 struct MetricsState {
-    inserted: HashMap<StakingEventType, u64>,
-    duplicates: HashMap<StakingEventType, u64>,
+    inserted: HashMap<EventType, u64>,
+    duplicates: HashMap<EventType, u64>,
     insert_events_err: u64,
     insert_timeout_err: u64,
     backfilled_blocks_ok: u64,
@@ -28,6 +31,9 @@ struct MetricsState {
     db_connections: u64,
     rpc_timeout_err: u64,
     rpc_conn_refused_err: u64,
+    transactions_fetched: u64,
+    transaction_fetch_failed: u64,
+    transaction_gaps_found: u64,
 }
 
 impl MetricsState {
@@ -42,6 +48,9 @@ impl MetricsState {
             db_connections: 0,
             rpc_timeout_err: 0,
             rpc_conn_refused_err: 0,
+            transactions_fetched: 0,
+            transaction_fetch_failed: 0,
+            transaction_gaps_found: 0,
         }
     }
 
@@ -75,6 +84,15 @@ impl MetricsState {
             Metric::RpcConnRefused => {
                 self.rpc_conn_refused_err += 1;
             }
+            Metric::TransactionsFetched(count) => {
+                self.transactions_fetched += count;
+            }
+            Metric::TransactionFetchFailed(count) => {
+                self.transaction_fetch_failed += count;
+            }
+            Metric::TransactionGapsFound(count) => {
+                self.transaction_gaps_found += count;
+            }
         }
     }
 
@@ -83,7 +101,7 @@ impl MetricsState {
 
         output.push_str("# HELP staking_events_inserted_total Total number of staking events inserted into the database\n");
         output.push_str("# TYPE staking_events_inserted_total counter\n");
-        for event_type in StakingEventType::all_types() {
+        for event_type in EventType::all_types() {
             let count = self.inserted.get(&event_type).unwrap_or(&0);
             output.push_str(&format!(
                 "staking_events_inserted_total{{event_type=\"{}\"}} {}\n",
@@ -93,7 +111,7 @@ impl MetricsState {
 
         output.push_str("# HELP staking_events_duplicates_total Total number of duplicate staking events detected\n");
         output.push_str("# TYPE staking_events_duplicates_total counter\n");
-        for event_type in StakingEventType::all_types() {
+        for event_type in EventType::all_types() {
             let count = self.duplicates.get(&event_type).unwrap_or(&0);
             output.push_str(&format!(
                 "staking_events_duplicates_total{{event_type=\"{}\"}} {}\n",
@@ -144,9 +162,7 @@ impl MetricsState {
             self.db_connections
         ));
 
-        output.push_str(
-            "# HELP staking_rpc_timeout_err Number of RPC timeout events\n",
-        );
+        output.push_str("# HELP staking_rpc_timeout_err Number of RPC timeout events\n");
         output.push_str("# TYPE staking_rpc_timeout_err counter\n");
         output.push_str(&format!(
             "staking_rpc_timeout_err {}\n",
@@ -160,6 +176,33 @@ impl MetricsState {
         output.push_str(&format!(
             "staking_rpc_conn_refused_err {}\n",
             self.rpc_conn_refused_err
+        ));
+
+        output.push_str(
+            "# HELP staking_transactions_fetched_total Total number of transactions fetched\n",
+        );
+        output.push_str("# TYPE staking_transactions_fetched_total counter\n");
+        output.push_str(&format!(
+            "staking_transactions_fetched_total {}\n",
+            self.transactions_fetched
+        ));
+
+        output.push_str(
+            "# HELP staking_transaction_fetch_failed_total Total number of failed transaction fetches\n",
+        );
+        output.push_str("# TYPE staking_transaction_fetch_failed_total counter\n");
+        output.push_str(&format!(
+            "staking_transaction_fetch_failed_total {}\n",
+            self.transaction_fetch_failed
+        ));
+
+        output.push_str(
+            "# HELP staking_transaction_gaps_found_total Total number of transaction gaps found\n",
+        );
+        output.push_str("# TYPE staking_transaction_gaps_found_total counter\n");
+        output.push_str(&format!(
+            "staking_transaction_gaps_found_total {}\n",
+            self.transaction_gaps_found
         ));
 
         output

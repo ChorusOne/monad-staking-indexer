@@ -14,10 +14,11 @@ pub struct Config {
     #[serde(flatten)]
     pub db_auth: DbAuth,
     pub backfill_chunk_size: u64,
-    pub gap_check_interval_secs: u64,
+    pub backfill_interval_secs: u64,
     pub db_batch_size: usize,
     pub db_operation_timeout_secs: u64,
     pub watchdog_timeout_secs: u64,
+    pub fetch_tx_meta_for_validators: Vec<u64>,
     pub metrics: MetricsConfig,
     pub logging: LoggingConfig,
 }
@@ -98,10 +99,11 @@ impl Config {
 
         let mut builder = ConfigBuilder::builder()
             .set_default("backfill_chunk_size", 100)?
-            .set_default("gap_check_interval_secs", 300)?
+            .set_default("backfill_interval_secs", 300)?
             .set_default("db_batch_size", 10)?
             .set_default("db_operation_timeout_secs", 10)?
             .set_default("watchdog_timeout_secs", 60)?
+            .set_default("fetch_tx_meta_for_validators", Vec::<u64>::new())?
             .set_default("metrics.bind_address", "127.0.0.1")?
             .set_default("metrics.port", 9090)?
             .set_default("logging.level", "info")?;

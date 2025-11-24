@@ -1,9 +1,11 @@
 use env_logger::TimestampPrecision;
 use monad_staking_indexer::provider::ReconnectProvider;
 use monad_staking_indexer::{
-    BlockBatch, DbRequest, chunk_range, config::Config, db, events, metrics, process_db_requests,
+    BackfillWork, BlockBatch, DbRequest, chunk_range, config::Config, db, events, metrics,
+    process_db_requests, transaction,
 };
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use eyre::Result;
@@ -41,10 +43,16 @@ async fn main() -> Result<()> {
     let live_reconnect_provider =
         ReconnectProvider::new(config.rpc_urls.clone(), config.watchdog_timeout_secs);
 
-    let gaps_reconnect_provider =
+    let backfill_reconnect_provider =
         ReconnectProvider::new(config.rpc_urls.clone(), config.watchdog_timeout_secs);
 
-    let (gap_tx, gap_rx) = mpsc::unbounded_channel();
+    let validator_filter: std::collections::HashSet<u64> = config
+        .fetch_tx_meta_for_validators
+        .iter()
+        .copied()
+        .collect();
+
+    let (backfill_tx, backfill_rx) = mpsc::unbounded_channel();
 
     let (db_tx, db_rx) = mpsc::unbounded_channel();
     let (metrics_request_tx, metrics_request_rx) = mpsc::unbounded_channel();
@@ -58,27 +66,31 @@ async fn main() -> Result<()> {
         tokio::spawn(process_db_requests(
             pool.clone(),
             db_rx,
-            gap_tx.clone(),
+            backfill_tx.clone(),
+            config.fetch_tx_meta_for_validators.clone(),
             metrics_tx.clone(),
             config.db_operation_timeout_secs,
         )),
-        tokio::spawn(periodic_gap_check(
-            config.gap_check_interval_secs,
+        tokio::spawn(periodic_backfill_check(
+            config.backfill_interval_secs,
             db_tx.clone(),
         )),
-        tokio::spawn(process_gaps_task(
-            gaps_reconnect_provider,
+        tokio::spawn(process_backfill_task(
+            backfill_reconnect_provider,
+            backfill_rx,
+            backfill_tx.clone(),
             db_tx.clone(),
-            gap_rx,
             config.backfill_chunk_size,
+            validator_filter.clone(),
             metrics_tx.clone(),
         )),
         tokio::spawn(process_live_blocks(
             live_reconnect_provider,
             max_block_on_startup,
             db_tx,
-            gap_tx,
+            backfill_tx,
             config.db_batch_size,
+            validator_filter,
             metrics_tx.clone(),
         )),
     ];
@@ -93,108 +105,171 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn periodic_gap_check(
+async fn periodic_backfill_check(
     interval_secs: u64,
-    gap_tx: mpsc::UnboundedSender<DbRequest>,
+    db_tx: mpsc::UnboundedSender<DbRequest>,
 ) -> Result<()> {
     let mut interval = interval(Duration::from_secs(interval_secs));
     interval.tick().await;
     loop {
-        info!("Running periodic gap check...");
-        let _ = gap_tx.send(DbRequest::GetBlockGaps);
+        info!("Running periodic backfill check...");
+        let _ = db_tx.send(DbRequest::GetBlockGaps);
+        let _ = db_tx.send(DbRequest::GetTransactionGaps);
         interval.tick().await;
     }
 }
 
-async fn process_gaps_task(
-    reconnect_provider: ReconnectProvider,
-    log_tx: mpsc::UnboundedSender<DbRequest>,
-    mut gap_rx: mpsc::UnboundedReceiver<Range<u64>>,
+async fn process_block_gap(
+    client: &monad_staking_indexer::provider::ConnectedProvider,
+    range: Range<u64>,
+    log_tx: &mpsc::UnboundedSender<DbRequest>,
+    tx_fetch_tx: &mpsc::UnboundedSender<BackfillWork>,
+    validator_filter: &std::collections::HashSet<u64>,
     chunk_size: u64,
+    metrics_tx: &mpsc::UnboundedSender<metrics::Metric>,
+) -> Result<()> {
+    let chunks = chunk_range(range.clone(), chunk_size);
+    if chunks.len() > 1 {
+        info!(
+            "Backfilling large range: {:?} ({} blocks) in {} chunks",
+            range,
+            range.end - range.start,
+            chunks.len()
+        );
+    }
+
+    let mut had_error = false;
+
+    for chunk_range in chunks.iter() {
+        debug!("Backfilling chunk: blocks {:?}", chunk_range);
+        let blocks_processed = chunk_range.end - chunk_range.start;
+
+        let res = client.historical_logs(chunk_range).await.and_then(|logs| {
+            process_historical_logs(logs, log_tx.clone(), tx_fetch_tx, validator_filter)
+        });
+
+        let metric = match &res {
+            Ok(()) => {
+                debug!("Successfully backfilled {chunk_range:?}");
+                metrics::Metric::BackfilledBlocks(blocks_processed)
+            }
+            Err(e) => {
+                error!("Failed to backfill {chunk_range:?}: {e:?}");
+                had_error = true;
+                metrics::Metric::FailedToBackfill(blocks_processed)
+            }
+        };
+        let _ = metrics_tx.send(metric);
+    }
+    info!(
+        "Finished backfilling range: {range:?} ({} blocks)",
+        range.end - range.start
+    );
+
+    if had_error {
+        Err(eyre::eyre!("One or more chunks failed in range {range:?}"))
+    } else {
+        Ok(())
+    }
+}
+
+async fn process_transaction_fetch(
+    client: &monad_staking_indexer::provider::ConnectedProvider,
+    request: &monad_staking_indexer::TransactionFetchRequest,
+    db_tx: &mpsc::UnboundedSender<DbRequest>,
+    metrics_tx: &mpsc::UnboundedSender<metrics::Metric>,
+) -> Result<()> {
+    match client.get_transaction(&request.transaction_hash).await {
+        Ok(Some(tx)) => {
+            let access_list = transaction::extract_access_list(&tx);
+            let tx_data = transaction::EventTxData {
+                transaction_hash: request.transaction_hash.clone(),
+                block_number: request.block_number,
+                event_type: request.event_type,
+                access_list,
+            };
+            let _ = db_tx.send(DbRequest::InsertTransactions(vec![tx_data]));
+            Ok(())
+        }
+        Ok(None) => {
+            error!("Transaction not found: {}", request.transaction_hash);
+            let _ = metrics_tx.send(metrics::Metric::TransactionFetchFailed(1));
+            Err(eyre::eyre!(
+                "Transaction not found: {}",
+                request.transaction_hash
+            ))
+        }
+        Err(e) => {
+            error!(
+                "Failed to fetch transaction {}: {:?}",
+                request.transaction_hash, e
+            );
+            let _ = metrics_tx.send(metrics::Metric::TransactionFetchFailed(1));
+            Err(e)
+        }
+    }
+}
+
+async fn process_backfill_task(
+    mut reconnect_provider: ReconnectProvider,
+    mut backfill_rx: mpsc::UnboundedReceiver<BackfillWork>,
+    backfill_tx: mpsc::UnboundedSender<BackfillWork>,
+    db_tx: mpsc::UnboundedSender<DbRequest>,
+    chunk_size: u64,
+    validator_filter: std::collections::HashSet<u64>,
     metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
 ) -> Result<()> {
-    let mut attempts = 0usize;
+    let mut client = reconnect_provider.connect(&metrics_tx).await;
 
-    while let Some(range) = gap_rx.recv().await {
-        let client = loop {
-            match reconnect_provider.connect(attempts).await {
-                Ok(client) => break client,
-                Err(e) => {
-                    attempts += 1;
-                    error!("Gaps task connection failed: {e:?}");
-                    metrics_tx.send(e).unwrap();
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
+    while let Some(work) = backfill_rx.recv().await {
+        let result = match &work {
+            BackfillWork::BlockGap(range) => {
+                process_block_gap(
+                    &client,
+                    range.clone(),
+                    &db_tx,
+                    &backfill_tx,
+                    &validator_filter,
+                    chunk_size,
+                    &metrics_tx,
+                )
+                .await
+            }
+            BackfillWork::TransactionFetch(request) => {
+                process_transaction_fetch(&client, request, &db_tx, &metrics_tx).await
             }
         };
 
-        let chunks = chunk_range(range.clone(), chunk_size);
-        if chunks.len() > 1 {
-            info!(
-                "Backfilling large range: {:?} ({} blocks) in {} chunks",
-                range,
-                range.end - range.start,
-                chunks.len()
-            );
+        match result {
+            Ok(()) => continue,
+            Err(e) => {
+                error!("Backfill work failed: {e:?}, reconnecting...");
+                client = reconnect_provider.connect(&metrics_tx).await;
+            }
         }
-
-        for chunk_range in chunks.iter() {
-            debug!("Backfilling chunk: blocks {:?}", chunk_range);
-            let blocks_processed = chunk_range.end - chunk_range.start;
-
-            let res = client
-                .historical_logs(chunk_range)
-                .await
-                .and_then(|logs| process_historical_logs(logs, log_tx.clone()));
-
-            let metric = match res {
-                Ok(()) => {
-                    debug!("Successfully backfilled {chunk_range:?}");
-                    metrics::Metric::BackfilledBlocks(blocks_processed)
-                }
-                Err(e) => {
-                    error!("Failed to backfill {chunk_range:?}: {e:?}");
-                    metrics::Metric::FailedToBackfill(blocks_processed)
-                }
-            };
-            let _ = metrics_tx.send(metric);
-        }
-        info!(
-            "Finished backfilling range: {range:?} ({} blocks)",
-            range.end - range.start
-        );
     }
+
     Ok(())
 }
 
 async fn process_live_blocks(
-    reconnect_provider: ReconnectProvider,
+    mut reconnect_provider: ReconnectProvider,
     mut start_block: Option<u64>,
     tx: mpsc::UnboundedSender<DbRequest>,
-    gap_tx: mpsc::UnboundedSender<Range<u64>>,
+    backfill_tx: mpsc::UnboundedSender<monad_staking_indexer::BackfillWork>,
     batch_size: usize,
+    validator_filter: std::collections::HashSet<u64>,
     metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
 ) -> Result<()> {
-    let mut current_block_buffer: Vec<events::StakingEvent> = Vec::new();
+    let mut current_block_buffer: Vec<events::Event> = Vec::new();
     let mut current_block_meta: Option<events::BlockMeta> = None;
     let mut batch = BlockBatch::new();
     let mut block_count = 0;
-    let mut attempts = 0usize;
 
     info!("Starting live event stream from block {:?}", start_block);
 
     loop {
-        let client = loop {
-            match reconnect_provider.connect(attempts).await {
-                Ok(c) => break c,
-                Err(e) => {
-                    error!("Live blocks connection failed: {e:?}");
-                    attempts += 1;
-                    metrics_tx.send(e).unwrap();
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            }
-        };
+        let client = reconnect_provider.connect(&metrics_tx).await;
 
         let event_stream = match client.stream_events().await {
             Ok(stream) => stream,
@@ -216,7 +291,11 @@ async fn process_live_blocks(
 
                     if let Some(start) = start_block {
                         if event_block_num > start {
-                            gap_tx.send(start..event_block_num).unwrap();
+                            backfill_tx
+                                .send(monad_staking_indexer::BackfillWork::BlockGap(
+                                    start..event_block_num,
+                                ))
+                                .unwrap();
                         }
                         start_block = None;
                     }
@@ -231,14 +310,22 @@ async fn process_live_blocks(
                         block_count += 1;
                     }
 
+                    if let events::Event::Staking(ref staking_event) = event
+                        && validator_filter.contains(&staking_event.val_id())
+                    {
+                        let req = monad_staking_indexer::TransactionFetchRequest {
+                            transaction_hash: staking_event.tx_hash().to_string(),
+                            block_number: event_block_num,
+                            event_type: staking_event.event_type(),
+                        };
+                        let _ = backfill_tx.send(BackfillWork::TransactionFetch(req));
+                    }
+
                     current_block_meta = Some(event.block_meta().clone());
                     current_block_buffer.push(event);
 
                     if block_count >= batch_size {
-                        tx.send(DbRequest::InsertCompleteBlocks(Box::new(std::mem::take(
-                            &mut batch,
-                        ))))
-                        .expect("Channel closed");
+                        let _ = tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch)));
                         batch = BlockBatch::new();
                         block_count = 0;
                     }
@@ -258,13 +345,12 @@ async fn process_live_blocks(
 fn process_historical_logs(
     mut logs: Vec<alloy::rpc::types::Log>,
     tx: mpsc::UnboundedSender<DbRequest>,
+    backfill_tx: &mpsc::UnboundedSender<monad_staking_indexer::BackfillWork>,
+    validator_filter: &std::collections::HashSet<u64>,
 ) -> Result<()> {
     logs.sort_by_key(|l| (l.block_number, l.transaction_index, l.log_index));
 
-    let mut blocks_map: std::collections::HashMap<
-        u64,
-        (events::BlockMeta, Vec<events::StakingEvent>),
-    > = std::collections::HashMap::new();
+    let mut blocks_map: HashMap<u64, (events::BlockMeta, Vec<events::Event>)> = HashMap::new();
 
     for log in logs {
         if let Some(event) = events::extract_event(&log)? {
@@ -273,15 +359,25 @@ fn process_historical_logs(
                 .entry(block_num)
                 .or_insert_with(|| (event.block_meta().clone(), Vec::new()))
                 .1
-                .push(event);
+                .push(event.clone());
+
+            if let events::Event::Staking(ref staking_event) = event
+                && validator_filter.contains(&staking_event.val_id())
+            {
+                let req = monad_staking_indexer::TransactionFetchRequest {
+                    transaction_hash: staking_event.tx_hash().to_string(),
+                    block_number: event.block_meta().block_number,
+                    event_type: staking_event.event_type(),
+                };
+                let _ = backfill_tx.send(BackfillWork::TransactionFetch(req));
+            }
         }
     }
 
-    let mut block_metas_and_events: Vec<(u64, events::BlockMeta, Vec<events::StakingEvent>)> =
-        blocks_map
-            .into_iter()
-            .map(|(num, (meta, events))| (num, meta, events))
-            .collect();
+    let mut block_metas_and_events: Vec<(u64, events::BlockMeta, Vec<events::Event>)> = blocks_map
+        .into_iter()
+        .map(|(num, (meta, events))| (num, meta, events))
+        .collect();
     block_metas_and_events.sort_by_key(|(num, _, _)| *num);
 
     let mut batch = BlockBatch::new();

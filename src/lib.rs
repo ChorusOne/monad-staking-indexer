@@ -6,8 +6,15 @@ pub mod events;
 pub mod metrics;
 pub mod pg_utils;
 pub mod provider;
+pub mod transaction;
 
 pub mod test_utils;
+
+use events::{BlockMeta, Event, StakingEvent, SystemEvent, ValidatorEvent};
+use events::{
+    ClaimRewardsEvent, CommissionChangedEvent, DelegateEvent, EpochChangedEvent, UndelegateEvent,
+    ValidatorCreatedEvent, ValidatorRewardedEvent, ValidatorStatusChangedEvent, WithdrawEvent,
+};
 
 use alloy::primitives::Address;
 
@@ -20,12 +27,6 @@ use eyre::Result;
 use log::{error, info};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
-
-use crate::events::{
-    BlockMeta, ClaimRewardsEvent, CommissionChangedEvent, DelegateEvent, EpochChangedEvent,
-    StakingEvent, UndelegateEvent, ValidatorCreatedEvent, ValidatorRewardedEvent,
-    ValidatorStatusChangedEvent, WithdrawEvent,
-};
 
 pub fn chunk_range(range: Range<u64>, chunk_size: u64) -> Vec<Range<u64>> {
     let mut chunks = Vec::with_capacity(((range.end - range.start) / chunk_size) as usize);
@@ -76,17 +77,21 @@ impl BlockBatch {
         }
     }
 
-    pub fn add_event(&mut self, event: StakingEvent) {
+    pub fn add_event(&mut self, event: events::Event) {
         match event {
-            StakingEvent::Delegate(e) => self.delegate.push(e),
-            StakingEvent::Undelegate(e) => self.undelegate.push(e),
-            StakingEvent::Withdraw(e) => self.withdraw.push(e),
-            StakingEvent::ClaimRewards(e) => self.claim_rewards.push(e),
-            StakingEvent::ValidatorRewarded(e) => self.validator_rewarded.push(e),
-            StakingEvent::EpochChanged(e) => self.epoch_changed.push(e),
-            StakingEvent::ValidatorCreated(e) => self.validator_created.push(e),
-            StakingEvent::ValidatorStatusChanged(e) => self.validator_status_changed.push(e),
-            StakingEvent::CommissionChanged(e) => self.commission_changed.push(e),
+            Event::Staking(StakingEvent::Delegate(e)) => self.delegate.push(e),
+            Event::Staking(StakingEvent::Undelegate(e)) => self.undelegate.push(e),
+            Event::Staking(StakingEvent::Withdraw(e)) => self.withdraw.push(e),
+            Event::Staking(StakingEvent::ClaimRewards(e)) => self.claim_rewards.push(e),
+            Event::System(SystemEvent::ValidatorRewarded(e)) => self.validator_rewarded.push(e),
+            Event::System(SystemEvent::EpochChanged(e)) => self.epoch_changed.push(e),
+            Event::Validator(ValidatorEvent::Created(e)) => self.validator_created.push(e),
+            Event::Validator(ValidatorEvent::StatusChanged(e)) => {
+                self.validator_status_changed.push(e)
+            }
+            Event::Validator(ValidatorEvent::CommissionChanged(e)) => {
+                self.commission_changed.push(e)
+            }
         }
     }
 
@@ -95,32 +100,47 @@ impl BlockBatch {
     }
 }
 
+#[derive(PartialEq, Debug)]
+pub struct TransactionFetchRequest {
+    pub transaction_hash: String,
+    pub block_number: u64,
+    pub event_type: events::StakingEventType,
+}
+
+#[derive(PartialEq, Debug)]
+pub enum BackfillWork {
+    BlockGap(Range<u64>),
+    TransactionFetch(TransactionFetchRequest),
+}
+
 pub enum DbRequest {
     InsertCompleteBlocks(Box<BlockBatch>),
     GetBlockGaps,
+    InsertTransactions(Vec<transaction::EventTxData>),
+    GetTransactionGaps,
 }
 
 pub async fn process_db_requests(
     pool: PgPool,
     mut rx: mpsc::UnboundedReceiver<DbRequest>,
-    gap_tx: mpsc::UnboundedSender<Range<u64>>,
+    backfill_tx: mpsc::UnboundedSender<BackfillWork>,
+    validator_ids: Vec<u64>,
     metrics_tx: mpsc::UnboundedSender<metrics::Metric>,
     db_operation_timeout_secs: u64,
 ) -> Result<()> {
-    use tokio::time::Duration;
-    let timeout = Duration::from_secs(db_operation_timeout_secs);
+    let timeout = tokio::time::Duration::from_secs(db_operation_timeout_secs);
     while let Some(req) = rx.recv().await {
         match req {
             DbRequest::GetBlockGaps => {
                 match db::repository::get_block_gaps(&pool).await {
                     Ok(gaps) => {
                         if gaps.is_empty() {
-                            info!("No gaps detected");
+                            info!("No block gaps detected");
                         } else {
-                            info!("Detected {} gap(s)", gaps.len());
+                            info!("Detected {} block gap(s)", gaps.len());
                             for range in gaps {
-                                info!("Queueing gap for backfill: {:?}", range);
-                                gap_tx.send(range)?;
+                                info!("Queueing block gap for backfill: {:?}", range);
+                                backfill_tx.send(BackfillWork::BlockGap(range))?;
                             }
                         }
                     }
@@ -128,6 +148,32 @@ pub async fn process_db_requests(
                         error!("Failed to check for gaps: {}", e);
                     }
                 };
+            }
+            DbRequest::GetTransactionGaps => {
+                match db::repository::get_missing_transaction_hashes(&pool, &validator_ids).await {
+                    Ok(missing_hashes) => {
+                        if missing_hashes.is_empty() {
+                            info!("No transaction gaps detected");
+                        } else {
+                            info!("Detected {} missing transactions", missing_hashes.len());
+                            let _ = metrics_tx.send(metrics::Metric::TransactionGapsFound(
+                                missing_hashes.len() as u64,
+                            ));
+                            for (transaction_hash, block_number, event_type) in missing_hashes {
+                                backfill_tx.send(BackfillWork::TransactionFetch(
+                                    TransactionFetchRequest {
+                                        transaction_hash,
+                                        block_number,
+                                        event_type,
+                                    },
+                                ))?;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to check for transaction gaps: {}", e);
+                    }
+                }
             }
             DbRequest::InsertCompleteBlocks(blocks) => {
                 info!("Inserting {} blocks", blocks.block_meta.len(),);
@@ -146,6 +192,18 @@ pub async fn process_db_requests(
                     Err(e) => {
                         error!("Failed to insert blocks: {:?}", e);
                         let _ = metrics_tx.send(metrics::Metric::FailedToInsert);
+                    }
+                }
+            }
+            DbRequest::InsertTransactions(tx_data) => {
+                info!("Inserting {} transactions", tx_data.len());
+                match db::insert_transactions(&pool, &tx_data).await {
+                    Ok(inserted) => {
+                        info!("Successfully inserted {} transactions", inserted);
+                        let _ = metrics_tx.send(metrics::Metric::TransactionsFetched(inserted));
+                    }
+                    Err(e) => {
+                        error!("Failed to insert transactions: {:?}", e);
                     }
                 }
             }
