@@ -367,7 +367,7 @@ pub async fn insert_blocks(
         .map_err(|_| DbError::Sqlx(sqlx::Error::PoolTimedOut))?
 }
 
-pub async fn insert_transactions_in_tx(
+pub async fn insert_transactions(
     pool: &PgPool,
     tx_data: &[crate::transaction::EventTxData],
 ) -> Result<u64, DbError> {

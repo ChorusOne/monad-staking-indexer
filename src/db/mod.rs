@@ -1,7 +1,7 @@
 pub mod repository;
 mod repository_batch;
 
-pub use repository_batch::{insert_blocks, insert_transactions_in_tx};
+pub use repository_batch::{insert_blocks, insert_transactions};
 
 use crate::metrics::Metric;
 use eyre::Result;

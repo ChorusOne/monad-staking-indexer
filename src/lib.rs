@@ -197,7 +197,7 @@ pub async fn process_db_requests(
             }
             DbRequest::InsertTransactions(tx_data) => {
                 info!("Inserting {} transactions", tx_data.len());
-                match db::insert_transactions_in_tx(&pool, &tx_data).await {
+                match db::insert_transactions(&pool, &tx_data).await {
                     Ok(inserted) => {
                         info!("Successfully inserted {} transactions", inserted);
                         let _ = metrics_tx.send(metrics::Metric::TransactionsFetched(inserted));
