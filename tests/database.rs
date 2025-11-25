@@ -132,7 +132,7 @@ fn test_block_gaps_with_consecutive_blocks() {
     pg_utils::with_postgres_and_schema_async(|pool| async move {
         test_utils::init_test_logger();
 
-        let gaps = db::repository::get_block_gaps(&pool).await?;
+        let gaps = db::repository::get_block_gaps(&pool, 0).await?;
         assert_eq!(gaps.len(), 0);
 
         for i in 1..10 {
@@ -144,7 +144,7 @@ fn test_block_gaps_with_consecutive_blocks() {
             insert_blockmeta(&pool, &block_meta).await?;
         }
 
-        let gaps = db::repository::get_block_gaps(&pool).await?;
+        let gaps = db::repository::get_block_gaps(&pool, 0).await?;
         assert_eq!(gaps.len(), 0);
 
         Ok(())
@@ -197,7 +197,7 @@ fn test_get_block_gaps_with_multiple_gaps() {
     pg_utils::with_postgres_and_schema_async(|pool| async move {
         test_utils::init_test_logger();
 
-        let gaps = db::repository::get_block_gaps(&pool).await?;
+        let gaps = db::repository::get_block_gaps(&pool, 0).await?;
         assert_eq!(gaps.len(), 0);
 
         let blocks_to_insert = vec![10, 15, 20, 25, 100, 105, 110, 500];
@@ -210,7 +210,7 @@ fn test_get_block_gaps_with_multiple_gaps() {
             insert_blockmeta(&pool, &block_meta).await?;
         }
 
-        let gaps = db::repository::get_block_gaps(&pool).await?;
+        let gaps = db::repository::get_block_gaps(&pool, 0).await?;
         assert_eq!(gaps.len(), 7);
 
         assert_eq!(gaps[0].start, 11);
@@ -233,6 +233,66 @@ fn test_get_block_gaps_with_multiple_gaps() {
 
         assert_eq!(gaps[6].start, 111);
         assert_eq!(gaps[6].end, 500);
+
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn test_block_gaps_with_checkpoint() {
+    pg_utils::with_postgres_and_schema_async(|pool| async move {
+        test_utils::init_test_logger();
+
+        for i in 1..=20 {
+            let block_meta = events::BlockMeta {
+                block_number: i,
+                block_hash: format!("0xhash{}", i),
+                block_timestamp: 1234567890 + i,
+            };
+            insert_blockmeta(&pool, &block_meta).await?;
+        }
+
+        let gaps = db::repository::get_block_gaps(&pool, 10).await?;
+        assert_eq!(gaps.len(), 0);
+
+        let block_meta_30 = events::BlockMeta {
+            block_number: 30,
+            block_hash: "0xhash30".to_string(),
+            block_timestamp: 1234567920,
+        };
+        insert_blockmeta(&pool, &block_meta_30).await?;
+
+        let gaps = db::repository::get_block_gaps(&pool, 10).await?;
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].start, 21);
+        assert_eq!(gaps[0].end, 30);
+
+        let gaps_from_zero = db::repository::get_block_gaps(&pool, 0).await?;
+        assert_eq!(gaps_from_zero.len(), 1);
+        assert_eq!(gaps_from_zero[0].start, 21);
+        assert_eq!(gaps_from_zero[0].end, 30);
+
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn test_checkpoint_functions() {
+    pg_utils::with_postgres_and_schema_async(|pool| async move {
+        test_utils::init_test_logger();
+
+        let checkpoint = db::repository::get_block_sync_checkpoint(&pool).await?;
+        assert_eq!(checkpoint, 0);
+
+        db::repository::update_block_sync_checkpoint(&pool, 100).await?;
+        let checkpoint = db::repository::get_block_sync_checkpoint(&pool).await?;
+        assert_eq!(checkpoint, 100);
+
+        db::repository::update_block_sync_checkpoint(&pool, 500).await?;
+        let checkpoint = db::repository::get_block_sync_checkpoint(&pool).await?;
+        assert_eq!(checkpoint, 500);
 
         Ok(())
     })

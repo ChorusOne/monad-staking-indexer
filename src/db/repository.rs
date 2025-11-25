@@ -25,13 +25,35 @@ pub async fn get_max_block_number(pool: &PgPool) -> Result<Option<u64>, DbError>
     Ok(row.map(|b| b as u64))
 }
 
-pub async fn get_block_gaps(pool: &PgPool) -> Result<Vec<Range<u64>>, DbError> {
+pub async fn get_block_sync_checkpoint(pool: &PgPool) -> Result<u64, DbError> {
+    let row = sqlx::query_scalar::<_, i64>(
+        "SELECT last_verified_block FROM block_sync_checkpoint WHERE id = 1",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(row as u64)
+}
+
+pub async fn update_block_sync_checkpoint(pool: &PgPool, block_number: u64) -> Result<(), DbError> {
+    sqlx::query(
+        "UPDATE block_sync_checkpoint SET last_verified_block = $1, updated_at = CURRENT_TIMESTAMP WHERE id = 1"
+    )
+    .bind(block_number as i64)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn get_block_gaps(pool: &PgPool, from_block: u64) -> Result<Vec<Range<u64>>, DbError> {
     let rows = sqlx::query_as::<_, (i64, i64)>(
         r#"
         WITH gaps AS (
             SELECT block_number + 1 AS gap_start,
                    LEAD(block_number) OVER (ORDER BY block_number) - 1 AS gap_end
             FROM blocks
+            WHERE block_number > $1
         )
         SELECT gap_start, gap_end
         FROM gaps
@@ -39,6 +61,7 @@ pub async fn get_block_gaps(pool: &PgPool) -> Result<Vec<Range<u64>>, DbError> {
         AND gap_end >= gap_start
         "#,
     )
+    .bind(from_block as i64)
     .fetch_all(pool)
     .await?;
 
