@@ -53,7 +53,7 @@ pub async fn get_block_gaps(pool: &PgPool, from_block: u64) -> Result<Vec<Range<
             SELECT block_number + 1 AS gap_start,
                    LEAD(block_number) OVER (ORDER BY block_number) - 1 AS gap_end
             FROM blocks
-            WHERE block_number > $1
+            WHERE block_number >= $1
         )
         SELECT gap_start, gap_end
         FROM gaps

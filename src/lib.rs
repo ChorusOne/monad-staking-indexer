@@ -111,6 +111,7 @@ pub struct TransactionFetchRequest {
 pub enum BackfillWork {
     BlockGap(Range<u64>),
     TransactionFetch(TransactionFetchRequest),
+    NoBlockGaps(Range<u64>),
 }
 
 pub enum DbRequest {
@@ -168,6 +169,7 @@ pub async fn process_db_requests(
                                     }
                                 }
                             }
+                            backfill_tx.send(BackfillWork::NoBlockGaps(checkpoint..max_block))?;
                         } else {
                             info!("Detected {} block gap(s)", gaps.len());
                             for range in gaps {

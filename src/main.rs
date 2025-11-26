@@ -238,6 +238,9 @@ async fn process_backfill_task(
             BackfillWork::TransactionFetch(request) => {
                 process_transaction_fetch(&client, request, &db_tx, &metrics_tx).await
             }
+            BackfillWork::NoBlockGaps(_) => {
+                continue;
+            }
         };
 
         match result {
