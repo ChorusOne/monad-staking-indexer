@@ -111,6 +111,7 @@ pub struct TransactionFetchRequest {
 pub enum BackfillWork {
     BlockGap(Range<u64>),
     TransactionFetch(TransactionFetchRequest),
+    NoBlockGaps(Range<u64>),
 }
 
 pub enum DbRequest {
@@ -132,10 +133,43 @@ pub async fn process_db_requests(
     while let Some(req) = rx.recv().await {
         match req {
             DbRequest::GetBlockGaps => {
-                match db::repository::get_block_gaps(&pool).await {
+                let checkpoint = match db::repository::get_block_sync_checkpoint(&pool).await {
+                    Ok(cp) => cp,
+                    Err(e) => {
+                        error!("Failed to get block sync checkpoint: {}", e);
+                        continue;
+                    }
+                };
+
+                let max_block = match db::repository::get_max_block_number(&pool).await {
+                    Ok(Some(max)) => max,
+                    Ok(None) => {
+                        info!("No blocks in database yet");
+                        continue;
+                    }
+                    Err(e) => {
+                        error!("Failed to get max block number: {}", e);
+                        continue;
+                    }
+                };
+
+                match db::repository::get_block_gaps(&pool, checkpoint).await {
                     Ok(gaps) => {
                         if gaps.is_empty() {
                             info!("No block gaps detected");
+                            if max_block > checkpoint {
+                                match db::repository::update_block_sync_checkpoint(&pool, max_block)
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        info!("Updated block sync checkpoint to {}", max_block)
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to update block sync checkpoint: {}", e)
+                                    }
+                                }
+                            }
+                            backfill_tx.send(BackfillWork::NoBlockGaps(checkpoint..max_block))?;
                         } else {
                             info!("Detected {} block gap(s)", gaps.len());
                             for range in gaps {

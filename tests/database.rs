@@ -48,6 +48,15 @@ fn process_single_block() {
 
         tx.send(DbRequest::GetBlockGaps).unwrap();
 
+        let result = backfill_rx.recv().await.unwrap();
+        match result {
+            BackfillWork::NoBlockGaps(range) => {
+                assert_eq!(range.start, 0);
+                assert_eq!(range.end, 100);
+            }
+            _ => panic!("Expected NoBlockGaps"),
+        }
+
         drop(tx);
         assert_eq!(backfill_rx.recv().await, None);
 
@@ -132,7 +141,7 @@ fn test_block_gaps_with_consecutive_blocks() {
     pg_utils::with_postgres_and_schema_async(|pool| async move {
         test_utils::init_test_logger();
 
-        let gaps = db::repository::get_block_gaps(&pool).await?;
+        let gaps = db::repository::get_block_gaps(&pool, 0).await?;
         assert_eq!(gaps.len(), 0);
 
         for i in 1..10 {
@@ -144,7 +153,7 @@ fn test_block_gaps_with_consecutive_blocks() {
             insert_blockmeta(&pool, &block_meta).await?;
         }
 
-        let gaps = db::repository::get_block_gaps(&pool).await?;
+        let gaps = db::repository::get_block_gaps(&pool, 0).await?;
         assert_eq!(gaps.len(), 0);
 
         Ok(())
@@ -197,7 +206,7 @@ fn test_get_block_gaps_with_multiple_gaps() {
     pg_utils::with_postgres_and_schema_async(|pool| async move {
         test_utils::init_test_logger();
 
-        let gaps = db::repository::get_block_gaps(&pool).await?;
+        let gaps = db::repository::get_block_gaps(&pool, 0).await?;
         assert_eq!(gaps.len(), 0);
 
         let blocks_to_insert = vec![10, 15, 20, 25, 100, 105, 110, 500];
@@ -210,7 +219,7 @@ fn test_get_block_gaps_with_multiple_gaps() {
             insert_blockmeta(&pool, &block_meta).await?;
         }
 
-        let gaps = db::repository::get_block_gaps(&pool).await?;
+        let gaps = db::repository::get_block_gaps(&pool, 0).await?;
         assert_eq!(gaps.len(), 7);
 
         assert_eq!(gaps[0].start, 11);
@@ -233,6 +242,97 @@ fn test_get_block_gaps_with_multiple_gaps() {
 
         assert_eq!(gaps[6].start, 111);
         assert_eq!(gaps[6].end, 500);
+
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn test_block_gaps_with_checkpoint() {
+    pg_utils::with_postgres_and_schema_async(|pool| async move {
+        test_utils::init_test_logger();
+
+        let (tx, mut backfill_rx, mut metrics_rx) = test_utils::spawn_process_event_logs(&pool);
+
+        for i in 1..=20 {
+            let block_meta = events::BlockMeta {
+                block_number: i,
+                block_hash: format!("0xhash{}", i),
+                block_timestamp: 1234567890 + i,
+            };
+            let mut batch = BlockBatch::new();
+            batch.add_block_meta(block_meta);
+            tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch)))
+                .unwrap();
+        }
+
+        for _ in 0..20 {
+            metrics_rx.recv().await.unwrap();
+        }
+
+        tx.send(DbRequest::GetBlockGaps).unwrap();
+        let gap = backfill_rx.recv().await.unwrap();
+        match gap {
+            BackfillWork::NoBlockGaps(range) => {
+                assert_eq!(range.start, 0);
+                assert_eq!(range.end, 20);
+            }
+            _ => panic!("Expected NoBlockGaps"),
+        }
+
+        let checkpoint = db::repository::get_block_sync_checkpoint(&pool).await?;
+        assert_eq!(checkpoint, 20);
+
+        let block_meta_30 = events::BlockMeta {
+            block_number: 30,
+            block_hash: "0xhash30".to_string(),
+            block_timestamp: 1234567920,
+        };
+        let mut batch = BlockBatch::new();
+        batch.add_block_meta(block_meta_30);
+        tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch)))
+            .unwrap();
+
+        metrics_rx.recv().await.unwrap();
+
+        tx.send(DbRequest::GetBlockGaps).unwrap();
+
+        let gap = backfill_rx.recv().await.unwrap();
+        match gap {
+            BackfillWork::BlockGap(range) => {
+                assert_eq!(range.start, 21);
+                assert_eq!(range.end, 30);
+            }
+            _ => panic!("Expected BlockGap"),
+        }
+
+        let checkpoint = db::repository::get_block_sync_checkpoint(&pool).await?;
+        assert_eq!(checkpoint, 20);
+
+        drop(tx);
+        assert!(backfill_rx.recv().await.is_none());
+
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn test_checkpoint_functions() {
+    pg_utils::with_postgres_and_schema_async(|pool| async move {
+        test_utils::init_test_logger();
+
+        let checkpoint = db::repository::get_block_sync_checkpoint(&pool).await?;
+        assert_eq!(checkpoint, 0);
+
+        db::repository::update_block_sync_checkpoint(&pool, 100).await?;
+        let checkpoint = db::repository::get_block_sync_checkpoint(&pool).await?;
+        assert_eq!(checkpoint, 100);
+
+        db::repository::update_block_sync_checkpoint(&pool, 500).await?;
+        let checkpoint = db::repository::get_block_sync_checkpoint(&pool).await?;
+        assert_eq!(checkpoint, 500);
 
         Ok(())
     })
