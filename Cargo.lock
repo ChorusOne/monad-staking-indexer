@@ -3,6 +3,34 @@
 version = 4
 
 [[package]]
+name = "aetos"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b22ca5e51eb89a6b17fb7e3d92e725606d9205dcad1f8f158de0b501899e1315"
+dependencies = [
+ "aetos-core",
+ "aetos-macro",
+]
+
+[[package]]
+name = "aetos-core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00fe5d766f19d91ff725ee564fdcdc8b016b288abcbd4e41ea6d57316a05418c"
+
+[[package]]
+name = "aetos-macro"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa6d433825c355156dd64d2a812d5e1fb9ead9883fae1a5eb4af78336ec89eb2"
+dependencies = [
+ "aetos-core",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.110",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2686,6 +2714,7 @@ dependencies = [
 name = "monad-staking-indexer"
 version = "0.1.0"
 dependencies = [
+ "aetos",
  "alloy",
  "async-stream",
  "axum",
