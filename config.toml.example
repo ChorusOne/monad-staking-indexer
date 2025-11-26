@@ -17,8 +17,8 @@ db_name = "monad_staking_indexer"
 backfill_chunk_size = 100
 
 # Interval in seconds between periodic gap checks
-# Can be overridden with INDEXER__GAP_CHECK_INTERVAL_SECS
-gap_check_interval_secs = 300
+# Can be overridden with INDEXER__BACKFILL_INTERVAL_SECS
+backfill_interval_secs = 300
 
 [metrics]
 # Bind address for metrics server
