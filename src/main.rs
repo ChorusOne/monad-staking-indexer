@@ -14,10 +14,7 @@ use log::{debug, error, info};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 
-use alloy::{
-    consensus::Transaction, primitives::U256, providers::Provider,
-    rpc::types::BlockTransactionsKind,
-};
+use alloy::{providers::Provider, rpc::types::BlockTransactionsKind};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -240,30 +237,17 @@ async fn process_block_tips_fetch(
         }
     };
 
-    let base_fee_per_gas = block.header.base_fee_per_gas.unwrap_or(0) as u128;
-
-    let transactions = match block.transactions.as_transactions() {
-        Some(txs) => txs,
-        None => {
-            error!("Block {} has no transactions", request.block_number);
+    let total_priority_fees = match transaction::calculate_block_tips(&block) {
+        Ok(tips) => tips,
+        Err(e) => {
+            error!(
+                "Failed to calculate tips for block {}: {}",
+                request.block_number, e
+            );
             let _ = metrics_tx.send(metrics::Metric::BlockTipsFetchFailed(1));
-            return Err(eyre::eyre!(
-                "Block {} has no transactions",
-                request.block_number
-            ));
+            return Err(e);
         }
     };
-
-    let total_priority_fees: U256 = transactions
-        .iter()
-        .map(|tx| {
-            let gas_used = tx.gas_limit() as u128;
-            let eff_gas_price = tx.effective_gas_price.unwrap_or(0);
-
-            let tip_per_gas = eff_gas_price.saturating_sub(base_fee_per_gas);
-            U256::from(tip_per_gas.saturating_mul(gas_used))
-        })
-        .sum();
 
     info!(
         "Block {}: priority fees = {:.4} MON",
