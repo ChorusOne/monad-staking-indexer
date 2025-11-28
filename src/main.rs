@@ -14,8 +14,6 @@ use log::{debug, error, info};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 
-use alloy::{providers::Provider, rpc::types::BlockTransactionsKind};
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = Config::load().expect("Failed to load configuration");
@@ -219,24 +217,13 @@ async fn process_block_tips_fetch(
     db_tx: &mpsc::UnboundedSender<DbRequest>,
     metrics_tx: &mpsc::UnboundedSender<metrics::Metric>,
 ) -> Result<()> {
-    let block = match client
-        .provider
-        .get_block_by_number(request.block_number.into(), BlockTransactionsKind::Full)
-        .await
-    {
-        Ok(Some(b)) => b,
-        Ok(None) => {
-            error!("Block {} not found", request.block_number);
-            let _ = metrics_tx.send(metrics::Metric::BlockTipsFetchFailed(1));
-            return Err(eyre::eyre!("Block {} not found", request.block_number));
-        }
+    let block = match client.get_full_block(request.block_number).await {
+        Ok(block) => block,
         Err(e) => {
-            error!("Failed to fetch block {}: {:?}", request.block_number, e);
             let _ = metrics_tx.send(metrics::Metric::BlockTipsFetchFailed(1));
-            return Err(e.into());
+            return Err(e);
         }
     };
-
     let total_priority_fees = match transaction::calculate_block_tips(&block) {
         Ok(tips) => tips,
         Err(e) => {
