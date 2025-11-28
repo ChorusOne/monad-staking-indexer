@@ -14,6 +14,11 @@ use log::{debug, error, info};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 
+use alloy::{
+    consensus::Transaction, primitives::U256, providers::Provider,
+    rpc::types::BlockTransactionsKind,
+};
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = Config::load().expect("Failed to load configuration");
@@ -115,6 +120,7 @@ async fn periodic_backfill_check(
         info!("Running periodic backfill check...");
         let _ = db_tx.send(DbRequest::GetBlockGaps);
         let _ = db_tx.send(DbRequest::GetTransactionGaps);
+        let _ = db_tx.send(DbRequest::GetBlockTipsGaps);
         interval.tick().await;
     }
 }
@@ -210,6 +216,74 @@ async fn process_transaction_fetch(
     }
 }
 
+async fn process_block_tips_fetch(
+    client: &monad_staking_indexer::provider::ConnectedProvider,
+    request: &monad_staking_indexer::BlockTipsFetchRequest,
+    db_tx: &mpsc::UnboundedSender<DbRequest>,
+    metrics_tx: &mpsc::UnboundedSender<metrics::Metric>,
+) -> Result<()> {
+    let block = match client
+        .provider
+        .get_block_by_number(request.block_number.into(), BlockTransactionsKind::Full)
+        .await
+    {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            error!("Block {} not found", request.block_number);
+            let _ = metrics_tx.send(metrics::Metric::BlockTipsFetchFailed(1));
+            return Err(eyre::eyre!("Block {} not found", request.block_number));
+        }
+        Err(e) => {
+            error!("Failed to fetch block {}: {:?}", request.block_number, e);
+            let _ = metrics_tx.send(metrics::Metric::BlockTipsFetchFailed(1));
+            return Err(e.into());
+        }
+    };
+
+    let base_fee_per_gas = block.header.base_fee_per_gas.unwrap_or(0) as u128;
+
+    let transactions = match block.transactions.as_transactions() {
+        Some(txs) => txs,
+        None => {
+            error!("Block {} has no transactions", request.block_number);
+            let _ = metrics_tx.send(metrics::Metric::BlockTipsFetchFailed(1));
+            return Err(eyre::eyre!(
+                "Block {} has no transactions",
+                request.block_number
+            ));
+        }
+    };
+
+    let total_priority_fees: U256 = transactions
+        .iter()
+        .map(|tx| {
+            let gas_used = tx.gas_limit() as u128;
+            let eff_gas_price = tx.effective_gas_price.unwrap_or(0);
+
+            let tip_per_gas = eff_gas_price.saturating_sub(base_fee_per_gas);
+            U256::from(tip_per_gas.saturating_mul(gas_used))
+        })
+        .sum();
+
+    info!(
+        "Block {}: priority fees = {:.4} MON",
+        request.block_number,
+        total_priority_fees
+            .to_string()
+            .parse::<f64>()
+            .expect("2**256 (<1e78) is < 1e308")
+            / 1.0e18
+    );
+
+    let _ = db_tx.send(DbRequest::InsertBlockTip((
+        request.block_number,
+        total_priority_fees,
+    )));
+
+    let _ = metrics_tx.send(metrics::Metric::BackfilledBlockTips(1));
+    Ok(())
+}
+
 async fn process_backfill_task(
     mut reconnect_provider: ReconnectProvider,
     mut backfill_rx: mpsc::UnboundedReceiver<BackfillWork>,
@@ -237,6 +311,9 @@ async fn process_backfill_task(
             }
             BackfillWork::TransactionFetch(request) => {
                 process_transaction_fetch(&client, request, &db_tx, &metrics_tx).await
+            }
+            BackfillWork::BlockTipsFetch(request) => {
+                process_block_tips_fetch(&client, request, &db_tx, &metrics_tx).await
             }
             BackfillWork::NoBlockGaps(_) => {
                 continue;
@@ -312,17 +389,7 @@ async fn process_live_blocks(
                         }
                         block_count += 1;
                     }
-
-                    if let events::Event::Staking(ref staking_event) = event
-                        && validator_filter.contains(&staking_event.val_id())
-                    {
-                        let req = monad_staking_indexer::TransactionFetchRequest {
-                            transaction_hash: staking_event.tx_hash().to_string(),
-                            block_number: event_block_num,
-                            event_type: staking_event.event_type(),
-                        };
-                        let _ = backfill_tx.send(BackfillWork::TransactionFetch(req));
-                    }
+                    extract_backfill_events(&event, &backfill_tx, &validator_filter);
 
                     current_block_meta = Some(event.block_meta().clone());
                     current_block_buffer.push(event);
@@ -345,6 +412,33 @@ async fn process_live_blocks(
     }
 }
 
+fn extract_backfill_events(
+    event: &events::Event,
+    backfill_tx: &mpsc::UnboundedSender<monad_staking_indexer::BackfillWork>,
+    validator_filter: &std::collections::HashSet<u64>,
+) {
+    if let events::Event::System(system_event) = event
+        && let events::SystemEvent::ValidatorRewarded(vre) = system_event
+        && validator_filter.contains(&vre.validator_id)
+    {
+        let req = monad_staking_indexer::BlockTipsFetchRequest {
+            block_number: event.block_meta().block_number,
+        };
+        let _ = backfill_tx.send(BackfillWork::BlockTipsFetch(req));
+    }
+
+    if let events::Event::Staking(staking_event) = event
+        && validator_filter.contains(&staking_event.val_id())
+    {
+        let req = monad_staking_indexer::TransactionFetchRequest {
+            transaction_hash: staking_event.tx_hash().to_string(),
+            block_number: event.block_meta().block_number,
+            event_type: staking_event.event_type(),
+        };
+        let _ = backfill_tx.send(BackfillWork::TransactionFetch(req));
+    }
+}
+
 fn process_historical_logs(
     mut logs: Vec<alloy::rpc::types::Log>,
     tx: mpsc::UnboundedSender<DbRequest>,
@@ -364,16 +458,7 @@ fn process_historical_logs(
                 .1
                 .push(event.clone());
 
-            if let events::Event::Staking(ref staking_event) = event
-                && validator_filter.contains(&staking_event.val_id())
-            {
-                let req = monad_staking_indexer::TransactionFetchRequest {
-                    transaction_hash: staking_event.tx_hash().to_string(),
-                    block_number: event.block_meta().block_number,
-                    event_type: staking_event.event_type(),
-                };
-                let _ = backfill_tx.send(BackfillWork::TransactionFetch(req));
-            }
+            extract_backfill_events(&event, backfill_tx, validator_filter);
         }
     }
 

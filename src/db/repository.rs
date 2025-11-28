@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use bigdecimal::BigDecimal;
 use sqlx::PgPool;
 use thiserror::Error;
 
@@ -40,6 +41,22 @@ pub async fn update_block_sync_checkpoint(pool: &PgPool, block_number: u64) -> R
         "UPDATE block_sync_checkpoint SET last_verified_block = $1, updated_at = CURRENT_TIMESTAMP WHERE id = 1"
     )
     .bind(block_number as i64)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn set_block_tip(
+    pool: &PgPool,
+    block_number: u64,
+    tips: BigDecimal,
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO block_tips (block_number, tips) VALUES ($1, $2) ON CONFLICT (block_number) DO UPDATE SET tips = $2"
+    )
+    .bind(block_number as i64)
+    .bind(tips)
     .execute(pool)
     .await?;
 
@@ -130,5 +147,36 @@ pub async fn get_missing_transaction_hashes(
             };
             (hash, block_num as u64, event_type)
         })
+        .collect())
+}
+
+pub async fn get_missing_block_tips(
+    pool: &PgPool,
+    validator_ids: &[u64],
+) -> Result<Vec<u64>, DbError> {
+    if validator_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let validator_ids_i64: Vec<i64> = validator_ids.iter().map(|&id| id as i64).collect();
+
+    let rows = sqlx::query_as::<_, (i64,)>(
+        r#"
+        SELECT vre.block_number
+        FROM validator_rewarded_events vre
+        LEFT JOIN block_tips bt ON vre.block_number = bt.block_number
+        WHERE vre.validator_id = ANY($1)
+        AND vre.epoch > 746
+        AND bt.block_number IS NULL
+        ORDER BY vre.block_number
+        "#,
+    )
+    .bind(&validator_ids_i64)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(block_number,)| block_number as u64)
         .collect())
 }

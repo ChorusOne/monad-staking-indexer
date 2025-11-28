@@ -22,7 +22,7 @@ pub struct ReconnectProvider {
 }
 
 pub struct ConnectedProvider {
-    provider: RootProvider<PubSubFrontend>,
+    pub provider: RootProvider<PubSubFrontend>,
     watchdog_timeout: Duration,
 }
 
