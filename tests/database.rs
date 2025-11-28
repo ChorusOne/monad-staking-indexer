@@ -338,3 +338,55 @@ fn test_checkpoint_functions() {
     })
     .unwrap();
 }
+
+#[test]
+fn test_block_tips_gaps() {
+    pg_utils::with_postgres_and_schema_async(|pool| async move {
+        test_utils::init_test_logger();
+
+        let block_meta = events::BlockMeta {
+            block_number: 100,
+            block_hash: "0xabcdef".to_string(),
+            block_timestamp: 1234567890,
+        };
+        let validator_rewarded = events::ValidatorRewardedEvent {
+            validator_id: 1,
+            from: "1234567890123456789012345678901234567890".to_string(),
+            amount: bigdecimal::BigDecimal::from(5000u64),
+            epoch: 750, // > 747, where staking was enabled
+            block_meta: block_meta.clone(),
+            tx_meta: events::TxMeta {
+                transaction_hash: "0x123abc".to_string(),
+                transaction_index: 0,
+            },
+        };
+
+        let mut batch = BlockBatch::new();
+        batch.add_block_meta(block_meta);
+        batch.add_event(Event::System(events::SystemEvent::ValidatorRewarded(
+            validator_rewarded,
+        )));
+
+        db::insert_blocks(&pool, &batch, Duration::from_secs(1)).await?;
+
+        let tips = db::repository::get_missing_block_tips(&pool, &[1]).await?;
+        assert_eq!(
+            tips.len(),
+            1,
+            "Should find 1 missing block tip for validator 1"
+        );
+        assert_eq!(tips[0], 100, "Missing tip should be for block 100");
+
+        db::set_block_tip(&pool, 100, bigdecimal::BigDecimal::from(1000000u64)).await?;
+
+        let tips_after = db::repository::get_missing_block_tips(&pool, &[1]).await?;
+        assert_eq!(
+            tips_after.len(),
+            0,
+            "Should have no missing tips after inserting"
+        );
+
+        Ok(())
+    })
+    .unwrap();
+}
