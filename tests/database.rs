@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use monad_staking_indexer::{
-    BackfillWork, BlockBatch, DbRequest, db,
+    BlockBatch, DbRequest, db,
     events::{self, BlockMeta, Event, EventType, StakingEvent, StakingEventType},
     metrics, pg_utils, test_utils,
 };
@@ -46,15 +46,17 @@ fn process_single_block() {
             panic!("unexpected");
         };
 
-        tx.send(DbRequest::GetBlockGaps).unwrap();
+        let (gaps_tx, gaps_rx) = tokio::sync::oneshot::channel();
+        tx.send(DbRequest::GetBlockGaps(gaps_tx)).unwrap();
 
-        let result = backfill_rx.recv().await.unwrap();
+        let result = gaps_rx.await.unwrap();
         match result {
-            BackfillWork::NoBlockGaps(range) => {
-                assert_eq!(range.start, 0);
-                assert_eq!(range.end, 100);
+            Some(response) => {
+                assert!(response.gaps.is_empty());
+                assert_eq!(response.checkpoint, 0);
+                assert_eq!(response.max_block, 100);
             }
-            _ => panic!("Expected NoBlockGaps"),
+            None => panic!("Expected Some(BlockGapsResponse)"),
         }
 
         drop(tx);
@@ -105,20 +107,21 @@ fn processes_non_consecutive_blocks() {
         tx.send(DbRequest::InsertCompleteBlocks(Box::new(batch2)))
             .unwrap();
 
-        tx.send(DbRequest::GetBlockGaps).unwrap();
+        let (gaps_tx, gaps_rx) = tokio::sync::oneshot::channel();
+        tx.send(DbRequest::GetBlockGaps(gaps_tx)).unwrap();
         drop(tx);
 
         metrics_rx.recv().await.unwrap();
         metrics_rx.recv().await.unwrap();
 
-        let gap = backfill_rx.recv().await.unwrap();
-        match gap {
-            BackfillWork::BlockGap(range) => {
-                assert_eq!(range.start, 101);
-                assert_eq!(range.end, 200);
-            }
-            _ => panic!("Expected BlockGap"),
-        }
+        let response = gaps_rx
+            .await
+            .unwrap()
+            .expect("Expected Some(BlockGapsResponse)");
+        assert_eq!(response.gaps.len(), 1);
+        let gap = &response.gaps[0];
+        assert_eq!(gap.start, 101);
+        assert_eq!(gap.end, 200);
 
         assert!(backfill_rx.recv().await.is_none());
 
@@ -271,14 +274,16 @@ fn test_block_gaps_with_checkpoint() {
             metrics_rx.recv().await.unwrap();
         }
 
-        tx.send(DbRequest::GetBlockGaps).unwrap();
-        let gap = backfill_rx.recv().await.unwrap();
-        match gap {
-            BackfillWork::NoBlockGaps(range) => {
-                assert_eq!(range.start, 0);
-                assert_eq!(range.end, 20);
+        let (gaps_tx, gaps_rx) = tokio::sync::oneshot::channel();
+        tx.send(DbRequest::GetBlockGaps(gaps_tx)).unwrap();
+        let result = gaps_rx.await.unwrap();
+        match result {
+            Some(response) => {
+                assert!(response.gaps.is_empty());
+                assert_eq!(response.checkpoint, 0);
+                assert_eq!(response.max_block, 20);
             }
-            _ => panic!("Expected NoBlockGaps"),
+            None => panic!("Expected Some(BlockGapsResponse)"),
         }
 
         let checkpoint = db::repository::get_block_sync_checkpoint(&pool).await?;
@@ -296,16 +301,17 @@ fn test_block_gaps_with_checkpoint() {
 
         metrics_rx.recv().await.unwrap();
 
-        tx.send(DbRequest::GetBlockGaps).unwrap();
+        let (gaps_tx, gaps_rx) = tokio::sync::oneshot::channel();
+        tx.send(DbRequest::GetBlockGaps(gaps_tx)).unwrap();
 
-        let gap = backfill_rx.recv().await.unwrap();
-        match gap {
-            BackfillWork::BlockGap(range) => {
-                assert_eq!(range.start, 21);
-                assert_eq!(range.end, 30);
-            }
-            _ => panic!("Expected BlockGap"),
-        }
+        let response = gaps_rx
+            .await
+            .unwrap()
+            .expect("Expected Some(BlockGapsResponse)");
+        assert_eq!(response.gaps.len(), 1);
+        let gap = &response.gaps[0];
+        assert_eq!(gap.start, 21);
+        assert_eq!(gap.end, 30);
 
         let checkpoint = db::repository::get_block_sync_checkpoint(&pool).await?;
         assert_eq!(checkpoint, 20);
