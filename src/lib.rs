@@ -16,7 +16,7 @@ use events::{
     ValidatorCreatedEvent, ValidatorRewardedEvent, ValidatorStatusChangedEvent, WithdrawEvent,
 };
 
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256};
 
 pub const STAKING_CONTRACT_ADDRESS: Address =
     alloy::primitives::address!("0000000000000000000000000000000000001000");
@@ -27,6 +27,8 @@ use eyre::Result;
 use log::{error, info};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
+
+use crate::events::u256_to_bigdecimal;
 
 pub fn chunk_range(range: Range<u64>, chunk_size: u64) -> Vec<Range<u64>> {
     let mut chunks = Vec::with_capacity(((range.end - range.start) / chunk_size) as usize);
@@ -108,17 +110,25 @@ pub struct TransactionFetchRequest {
 }
 
 #[derive(PartialEq, Debug)]
+pub struct BlockTipsFetchRequest {
+    pub block_number: u64,
+}
+
+#[derive(PartialEq, Debug)]
 pub enum BackfillWork {
     BlockGap(Range<u64>),
     TransactionFetch(TransactionFetchRequest),
+    BlockTipsFetch(BlockTipsFetchRequest),
     NoBlockGaps(Range<u64>),
 }
 
 pub enum DbRequest {
     InsertCompleteBlocks(Box<BlockBatch>),
-    GetBlockGaps,
     InsertTransactions(Vec<transaction::EventTxData>),
+    InsertBlockTip((u64, U256)),
+    GetBlockGaps,
     GetTransactionGaps,
+    GetBlockTipsGaps,
 }
 
 pub async fn process_db_requests(
@@ -209,6 +219,25 @@ pub async fn process_db_requests(
                     }
                 }
             }
+            DbRequest::GetBlockTipsGaps => {
+                match db::repository::get_missing_block_tips(&pool, &validator_ids).await {
+                    Ok(missing_blocks) => {
+                        if missing_blocks.is_empty() {
+                            info!("No block tips gaps detected");
+                        } else {
+                            info!("Detected {} missing block tips", missing_blocks.len());
+                            for block_number in missing_blocks {
+                                backfill_tx.send(BackfillWork::BlockTipsFetch(
+                                    BlockTipsFetchRequest { block_number },
+                                ))?;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to check for block tips gaps: {}", e);
+                    }
+                }
+            }
             DbRequest::InsertCompleteBlocks(blocks) => {
                 info!("Inserting {} blocks", blocks.block_meta.len(),);
 
@@ -238,6 +267,17 @@ pub async fn process_db_requests(
                     }
                     Err(e) => {
                         error!("Failed to insert transactions: {:?}", e);
+                    }
+                }
+            }
+            DbRequest::InsertBlockTip((block_height, tip)) => {
+                info!("Inserting block tip at block {block_height}");
+                match db::set_block_tip(&pool, block_height, u256_to_bigdecimal(tip)).await {
+                    Ok(()) => {
+                        info!("Successfully inserted block tip");
+                    }
+                    Err(e) => {
+                        error!("Failed to insert block tip: {:?}", e);
                     }
                 }
             }

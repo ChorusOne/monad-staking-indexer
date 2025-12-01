@@ -8,7 +8,7 @@ use std::fmt;
 
 use crate::contract_abi::StakingPrecompile;
 
-fn u256_to_bigdecimal(value: alloy::primitives::U256) -> BigDecimal {
+pub fn u256_to_bigdecimal(value: alloy::primitives::U256) -> BigDecimal {
     let bytes = value.as_le_bytes();
     let bigint = BigInt::from_bytes_le(Sign::Plus, bytes.as_ref());
     BigDecimal::from(bigint)

@@ -12,7 +12,7 @@ use tokio::time::Duration;
 use alloy::{
     providers::{Provider, ProviderBuilder, RootProvider, WsConnect},
     pubsub::PubSubFrontend,
-    rpc::types::Filter,
+    rpc::types::{BlockTransactionsKind, Filter},
 };
 
 pub struct ReconnectProvider {
@@ -84,6 +84,24 @@ impl ConnectedProvider {
             .get_transaction_by_hash(tx_hash)
             .await
             .map_err(Into::into)
+    }
+
+    pub async fn get_full_block(&self, block_number: u64) -> Result<alloy::rpc::types::Block> {
+        match self
+            .provider
+            .get_block_by_number(block_number.into(), BlockTransactionsKind::Full)
+            .await
+        {
+            Ok(Some(b)) => Ok(b),
+            Ok(None) => {
+                error!("Block {} not found", block_number);
+                Err(eyre::eyre!("Block {} not found", block_number))
+            }
+            Err(e) => {
+                error!("Failed to fetch block {}: {:?}", block_number, e);
+                Err(e.into())
+            }
+        }
     }
 
     pub async fn historical_logs(&self, range: &Range<u64>) -> Result<Vec<alloy::rpc::types::Log>> {

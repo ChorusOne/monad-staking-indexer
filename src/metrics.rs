@@ -19,6 +19,8 @@ pub enum Metric {
     TransactionsFetched(u64),
     TransactionFetchFailed(u64),
     TransactionGapsFound(u64),
+    BackfilledBlockTips(u64),
+    BlockTipsFetchFailed(u64),
 }
 
 #[metrics(prefix = "staking")]
@@ -79,6 +81,18 @@ struct MetricsState {
         help = "Total number of transaction gaps found"
     )]
     transaction_gaps_found: u64,
+
+    #[counter(
+        name = "block_tips_fetched_total",
+        help = "Total number of block tips successfully fetched"
+    )]
+    block_tips_fetched: u64,
+
+    #[counter(
+        name = "block_tips_fetch_failed_total",
+        help = "Total number of failed block tips fetches"
+    )]
+    block_tips_fetch_failed: u64,
 }
 
 impl MetricsState {
@@ -96,6 +110,8 @@ impl MetricsState {
             transactions_fetched: 0,
             transaction_fetch_failed: 0,
             transaction_gaps_found: 0,
+            block_tips_fetched: 0,
+            block_tips_fetch_failed: 0,
         }
     }
 
@@ -137,6 +153,12 @@ impl MetricsState {
             }
             Metric::TransactionGapsFound(count) => {
                 self.transaction_gaps_found += count;
+            }
+            Metric::BackfilledBlockTips(count) => {
+                self.block_tips_fetched += count;
+            }
+            Metric::BlockTipsFetchFailed(count) => {
+                self.block_tips_fetch_failed += count;
             }
         }
     }
