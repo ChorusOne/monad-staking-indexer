@@ -21,6 +21,8 @@ pub enum Metric {
     TransactionGapsFound(u64),
     BackfilledBlockTips(u64),
     BlockTipsFetchFailed(u64),
+    BackfilledDelegatorSnapshots(u64),
+    DelegatorSnapshotFetchFailed(u64),
 }
 
 #[metrics(prefix = "staking")]
@@ -93,6 +95,18 @@ struct MetricsState {
         help = "Total number of failed block tips fetches"
     )]
     block_tips_fetch_failed: u64,
+
+    #[counter(
+        name = "delegator_snapshots_fetched_total",
+        help = "Total number of delegator snapshots successfully fetched"
+    )]
+    delegator_snapshots_fetched: u64,
+
+    #[counter(
+        name = "delegator_snapshots_fetch_failed_total",
+        help = "Total number of failed delegator snapshot fetches"
+    )]
+    delegator_snapshots_fetch_failed: u64,
 }
 
 impl MetricsState {
@@ -112,6 +126,8 @@ impl MetricsState {
             transaction_gaps_found: 0,
             block_tips_fetched: 0,
             block_tips_fetch_failed: 0,
+            delegator_snapshots_fetched: 0,
+            delegator_snapshots_fetch_failed: 0,
         }
     }
 
@@ -159,6 +175,12 @@ impl MetricsState {
             }
             Metric::BlockTipsFetchFailed(count) => {
                 self.block_tips_fetch_failed += count;
+            }
+            Metric::BackfilledDelegatorSnapshots(count) => {
+                self.delegator_snapshots_fetched += count;
+            }
+            Metric::DelegatorSnapshotFetchFailed(count) => {
+                self.delegator_snapshots_fetch_failed += count;
             }
         }
     }

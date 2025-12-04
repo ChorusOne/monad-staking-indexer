@@ -2,7 +2,7 @@ pub mod repository;
 mod repository_batch;
 
 pub use repository::set_block_tip;
-pub use repository_batch::{insert_blocks, insert_transactions};
+pub use repository_batch::{insert_blocks, insert_delegator_snapshots, insert_transactions};
 
 use crate::metrics::Metric;
 use eyre::Result;

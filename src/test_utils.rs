@@ -1,8 +1,8 @@
 use sqlx::PgPool;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use crate::{BackfillWork, DbRequest, metrics};
 use crate::tasks::process_db_requests_task;
+use crate::{BackfillWork, DbRequest, metrics};
 
 pub fn init_test_logger() {
     let _ = env_logger::builder()
@@ -26,7 +26,8 @@ pub fn spawn_process_event_logs(
 
     let pool_clone = pool.clone();
     tokio::spawn(async move {
-        if let Err(e) = process_db_requests_task(pool_clone, db_rx, validator_ids, metrics_tx, 30).await
+        if let Err(e) =
+            process_db_requests_task(pool_clone, db_rx, validator_ids, metrics_tx, 30).await
         {
             eprintln!("process_db_requests_task failed: {}", e);
         }

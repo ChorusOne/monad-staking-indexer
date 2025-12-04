@@ -393,3 +393,43 @@ pub async fn insert_transactions(
 
     Ok(res.rows_affected())
 }
+
+pub async fn insert_delegator_snapshots(
+    pool: &PgPool,
+    validator_id: u64,
+    epoch: u64,
+    block_number: u64,
+    snapshots: &[crate::DelegatorInfo],
+) -> Result<u64, DbError> {
+    if snapshots.is_empty() {
+        return Ok(0);
+    }
+
+    let mut tx = pool.begin().await?;
+
+    let mut query_builder = sqlx::QueryBuilder::new(
+        "INSERT INTO delegator_snapshots (validator_id, delegator, epoch, block_number, stake, acc_reward_per_token, unclaimed_rewards, delta_stake, next_delta_stake, delta_epoch, next_delta_epoch) ",
+    );
+
+    query_builder.push_values(snapshots, |mut b, snapshot| {
+        b.push_bind(validator_id as i64)
+            .push_bind(hex::encode(snapshot.delegator))
+            .push_bind(epoch as i64)
+            .push_bind(block_number as i64)
+            .push_bind(&snapshot.stake)
+            .push_bind(&snapshot.acc_reward_per_token)
+            .push_bind(&snapshot.unclaimed_rewards)
+            .push_bind(&snapshot.delta_stake)
+            .push_bind(&snapshot.next_delta_stake)
+            .push_bind(snapshot.delta_epoch as i64)
+            .push_bind(snapshot.next_delta_epoch as i64);
+    });
+
+    query_builder.push(" ON CONFLICT (validator_id, delegator, epoch, block_number) DO NOTHING");
+
+    let res = query_builder.build().execute(&mut *tx).await?;
+
+    tx.commit().await?;
+
+    Ok(res.rows_affected())
+}

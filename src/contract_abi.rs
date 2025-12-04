@@ -63,5 +63,27 @@ sol! {
             uint256 oldCommission,
             uint256 newCommission
         );
+
+        function getDelegators(
+            uint64 validatorId,
+            address startDelegator
+        ) external view returns (
+            bool isDone,
+            address nextDelegator,
+            address[] memory delegators
+        );
+
+        function getDelegator(
+            uint64 validatorId,
+            address delegator
+        ) external view returns (
+            uint256 stake,
+            uint256 accRewardPerToken,
+            uint256 unclaimedRewards,
+            uint256 deltaStake,
+            uint256 nextDeltaStake,
+            uint64 deltaEpoch,
+            uint64 nextDeltaEpoch
+        );
     }
 }

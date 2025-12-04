@@ -180,3 +180,30 @@ pub async fn get_missing_block_tips(
         .map(|(block_number,)| block_number as u64)
         .collect())
 }
+
+pub async fn get_missing_delegator_snapshots(
+    pool: &PgPool,
+    validator_id: u64,
+) -> Result<Vec<(u64, u64)>, DbError> {
+    let rows = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT ece.new_epoch, ece.block_number
+        FROM epoch_changed_events ece
+        LEFT JOIN delegator_snapshots ds
+            ON ds.epoch = ece.new_epoch
+            AND ds.block_number = ece.block_number
+            AND ds.validator_id = $1
+        WHERE ds.epoch IS NULL
+        AND ece.new_epoch > 746
+        ORDER BY ece.new_epoch
+        "#,
+    )
+    .bind(validator_id as i64)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(epoch, block_number)| (epoch as u64, block_number as u64))
+        .collect())
+}
