@@ -212,3 +212,47 @@ pub async fn process_block_tips_fetch(
     let _ = metrics_tx.send(metrics::Metric::BackfilledBlockTips(1));
     Ok(())
 }
+
+pub async fn process_delegator_snapshot_fetch(
+    client: &ConnectedProvider,
+    request: &crate::DelegatorSnapshotFetchRequest,
+    db_tx: &mpsc::UnboundedSender<DbRequest>,
+    metrics_tx: &mpsc::UnboundedSender<metrics::Metric>,
+) -> Result<()> {
+    info!(
+        "Fetching delegator snapshot for validator {} at epoch {} (block {})",
+        request.validator_id, request.epoch, request.block_number
+    );
+
+    let snapshots = match client
+        .get_delegator_snapshot(request.block_number, request.validator_id)
+        .await
+    {
+        Ok(snapshots) => snapshots,
+        Err(e) => {
+            error!(
+                "Failed to fetch delegator snapshot for validator {} at epoch {}: {}",
+                request.validator_id, request.epoch, e
+            );
+            let _ = metrics_tx.send(metrics::Metric::DelegatorSnapshotFetchFailed(1));
+            return Err(e);
+        }
+    };
+
+    info!(
+        "Fetched {} delegators for validator {} at epoch {}",
+        snapshots.len(),
+        request.validator_id,
+        request.epoch
+    );
+
+    let _ = db_tx.send(DbRequest::InsertDelegatorSnapshots {
+        validator_id: request.validator_id,
+        epoch: request.epoch,
+        block_number: request.block_number,
+        snapshots,
+    });
+
+    let _ = metrics_tx.send(metrics::Metric::BackfilledDelegatorSnapshots(1));
+    Ok(())
+}

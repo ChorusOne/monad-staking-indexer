@@ -19,6 +19,7 @@ use events::{
 };
 
 use alloy::primitives::{Address, U256};
+use bigdecimal::BigDecimal;
 
 pub const STAKING_CONTRACT_ADDRESS: Address =
     alloy::primitives::address!("0000000000000000000000000000000000001000");
@@ -111,10 +112,18 @@ pub struct BlockTipsFetchRequest {
 }
 
 #[derive(PartialEq, Debug)]
+pub struct DelegatorSnapshotFetchRequest {
+    pub validator_id: u64,
+    pub epoch: u64,
+    pub block_number: u64,
+}
+
+#[derive(PartialEq, Debug)]
 pub enum BackfillWork {
     BlockGap(Range<u64>),
     TransactionFetch(TransactionFetchRequest),
     BlockTipsFetch(BlockTipsFetchRequest),
+    DelegatorSnapshotFetch(DelegatorSnapshotFetchRequest),
 }
 
 pub struct BlockGapsResponse {
@@ -127,9 +136,31 @@ pub enum DbRequest {
     InsertCompleteBlocks(Box<BlockBatch>),
     InsertTransactions(Vec<transaction::EventTxData>),
     InsertBlockTip((u64, U256)),
+    InsertDelegatorSnapshots {
+        validator_id: u64,
+        epoch: u64,
+        block_number: u64,
+        snapshots: Vec<DelegatorInfo>,
+    },
     GetBlockGaps(oneshot::Sender<Option<BlockGapsResponse>>),
     GetTransactionGaps(oneshot::Sender<Vec<TransactionFetchRequest>>),
     GetBlockTipsGaps(oneshot::Sender<Vec<BlockTipsFetchRequest>>),
+    GetDelegatorSnapshotsGaps {
+        validator_id: u64,
+        response_tx: oneshot::Sender<Vec<DelegatorSnapshotFetchRequest>>,
+    },
+}
+
+#[derive(Debug)]
+pub struct DelegatorInfo {
+    pub delegator: Address,
+    pub stake: BigDecimal,
+    pub acc_reward_per_token: BigDecimal,
+    pub unclaimed_rewards: BigDecimal,
+    pub delta_stake: BigDecimal,
+    pub next_delta_stake: BigDecimal,
+    pub delta_epoch: u64,
+    pub next_delta_epoch: u64,
 }
 
 #[cfg(test)]

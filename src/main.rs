@@ -1,11 +1,11 @@
 use env_logger::TimestampPrecision;
-use monad_staking_indexer::provider::ReconnectProvider;
 use monad_staking_indexer::config::Config;
-use monad_staking_indexer::{db, metrics};
+use monad_staking_indexer::provider::ReconnectProvider;
 use monad_staking_indexer::tasks::{
     periodic_backfill_check_task, process_backfill_task, process_db_requests_task,
     process_live_blocks_task,
 };
+use monad_staking_indexer::{db, metrics};
 
 use eyre::Result;
 use log::{error, info};
@@ -71,6 +71,7 @@ async fn main() -> Result<()> {
             config.backfill_interval_secs,
             db_tx.clone(),
             backfill_tx.clone(),
+            config.fetch_tx_meta_for_validators.clone(),
         )),
         tokio::spawn(process_backfill_task(
             backfill_reconnect_provider,

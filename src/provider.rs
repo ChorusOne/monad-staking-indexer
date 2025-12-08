@@ -1,4 +1,6 @@
-use crate::{STAKING_CONTRACT_ADDRESS, metrics::Metric};
+use crate::contract_abi::StakingPrecompile::{getDelegatorCall, getDelegatorsCall};
+use crate::events::u256_to_bigdecimal;
+use crate::{DelegatorInfo, STAKING_CONTRACT_ADDRESS, metrics::Metric};
 
 use std::ops::Range;
 
@@ -10,9 +12,11 @@ use tokio::sync::mpsc;
 use tokio::time::Duration;
 
 use alloy::{
+    primitives::Address,
     providers::{Provider, ProviderBuilder, RootProvider, WsConnect},
     pubsub::PubSubFrontend,
     rpc::types::{BlockTransactionsKind, Filter},
+    sol_types::SolCall,
 };
 
 pub struct ReconnectProvider {
@@ -131,6 +135,102 @@ impl ConnectedProvider {
                     Err(_) => break,
                 }
             }
+        })
+    }
+
+    async fn get_all_delegators(
+        &self,
+        validator_id: u64,
+        block_number: u64,
+    ) -> Result<Vec<Address>> {
+        let mut all_delegators = Vec::new();
+        let mut start_delegator = Address::ZERO;
+        let mut is_done = false;
+
+        while !is_done {
+            let call_data = getDelegatorsCall {
+                validatorId: validator_id,
+                startDelegator: start_delegator,
+            }
+            .abi_encode();
+
+            let tx = alloy::rpc::types::TransactionRequest::default()
+                .to(STAKING_CONTRACT_ADDRESS)
+                .input(call_data.into());
+
+            let result = self.provider.call(&tx).block(block_number.into()).await?;
+
+            let decoded = getDelegatorsCall::abi_decode_returns(&result, true)?;
+
+            is_done = decoded.isDone;
+            start_delegator = decoded.nextDelegator;
+
+            let delegator_count = decoded.delegators.len();
+            all_delegators.extend(decoded.delegators);
+
+            info!(
+                "Fetched {} delegators (total: {}, done: {})",
+                delegator_count,
+                all_delegators.len(),
+                is_done
+            );
+        }
+
+        Ok(all_delegators)
+    }
+
+    pub async fn get_delegator_snapshot(
+        &self,
+        height: u64,
+        validator_id: u64,
+    ) -> Result<Vec<DelegatorInfo>> {
+        let delegators = self.get_all_delegators(validator_id, height).await?;
+        let mut result = Vec::new();
+
+        for delegator in delegators {
+            match self
+                .get_delegator_info(validator_id, &delegator, height)
+                .await
+            {
+                Ok(info) => result.push(info),
+                Err(e) => {
+                    error!("Failed to get delegator info for {:?}: {:?}", delegator, e);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    async fn get_delegator_info(
+        &self,
+        validator_id: u64,
+        delegator: &Address,
+        block_number: u64,
+    ) -> Result<DelegatorInfo> {
+        let call_data = getDelegatorCall {
+            validatorId: validator_id,
+            delegator: *delegator,
+        }
+        .abi_encode();
+
+        let tx = alloy::rpc::types::TransactionRequest::default()
+            .to(STAKING_CONTRACT_ADDRESS)
+            .input(call_data.into());
+
+        let result = self.provider.call(&tx).block(block_number.into()).await?;
+
+        let decoded = getDelegatorCall::abi_decode_returns(&result, true)?;
+
+        Ok(DelegatorInfo {
+            delegator: *delegator,
+            stake: u256_to_bigdecimal(decoded.stake),
+            acc_reward_per_token: u256_to_bigdecimal(decoded.accRewardPerToken),
+            unclaimed_rewards: u256_to_bigdecimal(decoded.unclaimedRewards),
+            delta_stake: u256_to_bigdecimal(decoded.deltaStake),
+            next_delta_stake: u256_to_bigdecimal(decoded.nextDeltaStake),
+            delta_epoch: decoded.deltaEpoch,
+            next_delta_epoch: decoded.nextDeltaEpoch,
         })
     }
 }

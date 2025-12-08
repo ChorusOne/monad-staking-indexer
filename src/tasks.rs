@@ -1,18 +1,25 @@
-use crate::provider::ReconnectProvider;
-use crate::processing::{process_block_gap, process_transaction_fetch, process_block_tips_fetch, extract_backfill_events};
-use crate::{BackfillWork, BlockBatch, DbRequest, db, events, metrics, BlockGapsResponse, TransactionFetchRequest, BlockTipsFetchRequest};
 use crate::events::u256_to_bigdecimal;
+use crate::processing::{
+    extract_backfill_events, process_block_gap, process_block_tips_fetch,
+    process_delegator_snapshot_fetch, process_transaction_fetch,
+};
+use crate::provider::ReconnectProvider;
+use crate::{
+    BackfillWork, BlockBatch, BlockGapsResponse, BlockTipsFetchRequest, DbRequest,
+    DelegatorSnapshotFetchRequest, TransactionFetchRequest, db, events, metrics,
+};
 use eyre::Result;
+use futures_util::stream::StreamExt;
 use log::{error, info};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
-use futures_util::stream::StreamExt;
 
 pub async fn periodic_backfill_check_task(
     interval_secs: u64,
     db_tx: mpsc::UnboundedSender<DbRequest>,
     backfill_tx: mpsc::UnboundedSender<BackfillWork>,
+    enrich_validator_ids: Vec<u64>,
 ) -> Result<()> {
     let mut interval = interval(Duration::from_secs(interval_secs));
     interval.tick().await;
@@ -43,6 +50,27 @@ pub async fn periodic_backfill_check_task(
         if let Ok(requests) = block_tips_gaps_rx.await {
             for request in requests {
                 let _ = backfill_tx.send(BackfillWork::BlockTipsFetch(request));
+            }
+        }
+
+        for validator_id in &enrich_validator_ids {
+            let (delegator_snapshots_gaps_tx, delegator_snapshots_gaps_rx) =
+                tokio::sync::oneshot::channel();
+
+            let _ = db_tx.send(DbRequest::GetDelegatorSnapshotsGaps {
+                validator_id: *validator_id,
+                response_tx: delegator_snapshots_gaps_tx,
+            });
+
+            if let Ok(requests) = delegator_snapshots_gaps_rx.await {
+                info!(
+                    "Found {} missing delegator snapshots for validator {}",
+                    requests.len(),
+                    validator_id
+                );
+                for request in requests {
+                    let _ = backfill_tx.send(BackfillWork::DelegatorSnapshotFetch(request));
+                }
             }
         }
 
@@ -80,6 +108,9 @@ pub async fn process_backfill_task(
             }
             BackfillWork::BlockTipsFetch(request) => {
                 process_block_tips_fetch(&client, request, &db_tx, &metrics_tx).await
+            }
+            BackfillWork::DelegatorSnapshotFetch(request) => {
+                process_delegator_snapshot_fetch(&client, request, &db_tx, &metrics_tx).await
             }
         };
 
@@ -330,6 +361,70 @@ pub async fn process_db_requests_task(
                     }
                 }
             }
+            DbRequest::InsertDelegatorSnapshots {
+                validator_id,
+                epoch,
+                block_number,
+                snapshots,
+            } => {
+                info!(
+                    "Inserting {} delegator snapshots for validator {} at epoch {}",
+                    snapshots.len(),
+                    validator_id,
+                    epoch,
+                );
+                match db::insert_delegator_snapshots(
+                    &pool,
+                    validator_id,
+                    epoch,
+                    block_number,
+                    &snapshots,
+                )
+                .await
+                {
+                    Ok(inserted) => {
+                        info!("Successfully inserted {} delegator snapshots", inserted);
+                    }
+                    Err(e) => {
+                        error!("Failed to insert delegator snapshots: {:?}", e);
+                    }
+                }
+            }
+            DbRequest::GetDelegatorSnapshotsGaps {
+                validator_id,
+                response_tx,
+            } => match db::repository::get_missing_delegator_snapshots(&pool, validator_id).await {
+                Ok(missing_snapshots) => {
+                    if missing_snapshots.is_empty() {
+                        info!(
+                            "No delegator snapshot gaps detected for validator {}",
+                            validator_id
+                        );
+                    } else {
+                        info!(
+                            "Detected {} missing delegator snapshots for validator {}",
+                            missing_snapshots.len(),
+                            validator_id
+                        );
+                    }
+                    let requests: Vec<DelegatorSnapshotFetchRequest> = missing_snapshots
+                        .into_iter()
+                        .map(|(epoch, block_number)| DelegatorSnapshotFetchRequest {
+                            validator_id,
+                            epoch,
+                            block_number,
+                        })
+                        .collect();
+                    let _ = response_tx.send(requests);
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to check for delegator snapshot gaps for validator {}: {}",
+                        validator_id, e
+                    );
+                    let _ = response_tx.send(Vec::new());
+                }
+            },
         }
     }
     Ok(())
