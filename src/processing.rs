@@ -17,6 +17,7 @@ pub fn extract_backfill_events(
     {
         let req = crate::BlockTipsFetchRequest {
             block_number: event.block_meta().block_number,
+            validator_id: vre.validator_id,
         };
         let _ = backfill_tx.send(BackfillWork::BlockTipsFetch(req));
     }
@@ -206,6 +207,7 @@ pub async fn process_block_tips_fetch(
 
     let _ = db_tx.send(DbRequest::InsertBlockTip((
         request.block_number,
+        request.validator_id,
         total_priority_fees,
     )));
 

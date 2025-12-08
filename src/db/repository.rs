@@ -50,12 +50,14 @@ pub async fn update_block_sync_checkpoint(pool: &PgPool, block_number: u64) -> R
 pub async fn set_block_tip(
     pool: &PgPool,
     block_number: u64,
+    validator_id: u64,
     tips: BigDecimal,
 ) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO block_tips (block_number, tips) VALUES ($1, $2) ON CONFLICT (block_number) DO UPDATE SET tips = $2"
+        "INSERT INTO block_tips (block_number, val_id, tips) VALUES ($1, $2, $3) ON CONFLICT (block_number) DO UPDATE SET tips = $3, val_id = $2"
     )
     .bind(block_number as i64)
+    .bind(validator_id as i64)
     .bind(tips)
     .execute(pool)
     .await?;
@@ -153,16 +155,16 @@ pub async fn get_missing_transaction_hashes(
 pub async fn get_missing_block_tips(
     pool: &PgPool,
     validator_ids: &[u64],
-) -> Result<Vec<u64>, DbError> {
+) -> Result<Vec<(u64, u64)>, DbError> {
     if validator_ids.is_empty() {
         return Ok(Vec::new());
     }
 
     let validator_ids_i64: Vec<i64> = validator_ids.iter().map(|&id| id as i64).collect();
 
-    let rows = sqlx::query_as::<_, (i64,)>(
+    let rows = sqlx::query_as::<_, (i64, i64)>(
         r#"
-        SELECT vre.block_number
+        SELECT vre.block_number, vre.validator_id
         FROM validator_rewarded_events vre
         LEFT JOIN block_tips bt ON vre.block_number = bt.block_number
         WHERE vre.validator_id = ANY($1)
@@ -177,7 +179,7 @@ pub async fn get_missing_block_tips(
 
     Ok(rows
         .into_iter()
-        .map(|(block_number,)| block_number as u64)
+        .map(|(block_number, validator_id)| (block_number as u64, validator_id as u64))
         .collect())
 }
 

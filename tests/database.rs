@@ -381,9 +381,10 @@ fn test_block_tips_gaps() {
             1,
             "Should find 1 missing block tip for validator 1"
         );
-        assert_eq!(tips[0], 100, "Missing tip should be for block 100");
+        assert_eq!(tips[0].0, 100, "Missing tip should be for block 100");
+        assert_eq!(tips[0].1, 1, "Missing tip should be for validator 1");
 
-        db::set_block_tip(&pool, 100, bigdecimal::BigDecimal::from(1000000u64)).await?;
+        db::set_block_tip(&pool, 100, 1, bigdecimal::BigDecimal::from(1000000u64)).await?;
 
         let tips_after = db::repository::get_missing_block_tips(&pool, &[1]).await?;
         assert_eq!(

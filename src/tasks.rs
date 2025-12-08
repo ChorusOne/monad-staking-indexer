@@ -308,7 +308,7 @@ pub async fn process_db_requests_task(
                         }
                         let requests: Vec<BlockTipsFetchRequest> = missing_blocks
                             .into_iter()
-                            .map(|block_number| BlockTipsFetchRequest { block_number })
+                            .map(|(block_number, validator_id)| BlockTipsFetchRequest { block_number, validator_id })
                             .collect();
                         let _ = response_tx.send(requests);
                     }
@@ -350,9 +350,9 @@ pub async fn process_db_requests_task(
                     }
                 }
             }
-            DbRequest::InsertBlockTip((block_height, tip)) => {
+            DbRequest::InsertBlockTip((block_height, validator_id, tip)) => {
                 info!("Inserting block tip at block {block_height}");
-                match db::set_block_tip(&pool, block_height, u256_to_bigdecimal(tip)).await {
+                match db::set_block_tip(&pool, block_height, validator_id, u256_to_bigdecimal(tip)).await {
                     Ok(()) => {
                         info!("Successfully inserted block tip");
                     }

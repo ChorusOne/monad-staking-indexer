@@ -109,6 +109,7 @@ pub struct TransactionFetchRequest {
 #[derive(PartialEq, Debug)]
 pub struct BlockTipsFetchRequest {
     pub block_number: u64,
+    pub validator_id: u64,
 }
 
 #[derive(PartialEq, Debug)]
@@ -135,7 +136,7 @@ pub struct BlockGapsResponse {
 pub enum DbRequest {
     InsertCompleteBlocks(Box<BlockBatch>),
     InsertTransactions(Vec<transaction::EventTxData>),
-    InsertBlockTip((u64, U256)),
+    InsertBlockTip((u64, u64, U256)),
     InsertDelegatorSnapshots {
         validator_id: u64,
         epoch: u64,
