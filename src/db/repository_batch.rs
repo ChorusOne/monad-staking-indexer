@@ -151,7 +151,7 @@ async fn insert_validator_rewarded_events_in_tx(
             .push_bind(event.tx_meta.transaction_index as i64);
     });
 
-    query_builder.push(" ON CONFLICT (transaction_hash) DO NOTHING");
+    query_builder.push(" ON CONFLICT (validator_id, transaction_hash) DO NOTHING");
 
     let res = query_builder.build().execute(&mut **tx).await?;
 

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use monad_staking_indexer::{
     BlockBatch, DbRequest, db,
-    events::{self, BlockMeta, Event, EventType, StakingEvent, StakingEventType},
+    events::{self, BlockMeta, Event, EventType, StakingEvent, StakingEventType, SystemEventType},
     metrics, pg_utils, test_utils,
 };
 
@@ -392,6 +392,55 @@ fn test_block_tips_gaps() {
             0,
             "Should have no missing tips after inserting"
         );
+
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn test_multiple_validator_rewarded_events_same_tx() {
+    pg_utils::with_postgres_and_schema_async(|pool| async move {
+        test_utils::init_test_logger();
+
+        let block_meta = events::BlockMeta {
+            block_number: 100,
+            block_hash: "0xabcdef".to_string(),
+            block_timestamp: 1234567890,
+        };
+        let tx_meta = events::TxMeta {
+            transaction_hash: "0xdeadbeef".to_string(),
+            transaction_index: 0,
+        };
+
+        let mut batch = BlockBatch::new();
+        batch.add_block_meta(block_meta.clone());
+
+        for validator_id in [1, 2, 3] {
+            batch.add_event(Event::System(events::SystemEvent::ValidatorRewarded(
+                events::ValidatorRewardedEvent {
+                    validator_id,
+                    from: "1234567890123456789012345678901234567890".to_string(),
+                    amount: bigdecimal::BigDecimal::from(5000u64),
+                    epoch: 750,
+                    block_meta: block_meta.clone(),
+                    tx_meta: tx_meta.clone(),
+                },
+            )));
+        }
+
+        let result = db::insert_blocks(&pool, &batch, Duration::from_secs(1)).await?;
+
+        let rewarded_stats = result
+            .get(&EventType::System(SystemEventType::ValidatorRewarded))
+            .expect("should have ValidatorRewarded stats");
+        assert_eq!(rewarded_stats, &(3, 3), "all 3 events should be inserted");
+
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM validator_rewarded_events WHERE transaction_hash = '0xdeadbeef'")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(count.0, 3);
 
         Ok(())
     })
