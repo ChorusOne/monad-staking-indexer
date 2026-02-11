@@ -1,0 +1,2 @@
+ALTER TABLE validator_rewarded_events DROP CONSTRAINT validator_rewarded_events_transaction_hash_key;
+ALTER TABLE validator_rewarded_events ADD CONSTRAINT validator_rewarded_events_validator_id_transaction_hash_key UNIQUE (validator_id, transaction_hash);
