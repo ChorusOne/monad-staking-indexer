@@ -13,20 +13,39 @@ There's a prometheus metrics endpoint at `:9090/metrics`.
 Create the database and users:
 
 ```
-$ psql -h localhost -p 5400 -f migrations/00_init_database.psql
+PGPASSWORD=postgres psql -h 127.0.0.1 -p 5400 -U postgres -d postgres -f migrations/00_init_database.psql
 ```
 
 ## Run migrations
 
 ```
-export PGUSER=monad_staking_setup
-export PGPASSWORD=monad_staking_setup
-export PGDATABASE=monad_staking
+export DATABASE_URL=postgres://monad_staking_setup:monad_staking_setup@127.0.0.1:5400/monad_staking_indexer
 sqlx migrate run
+```
+
+## Configure the indexer
+
+The indexer does not read `DATABASE_URL` at runtime. `DATABASE_URL` is only used
+by `sqlx migrate run`; the indexer itself reads `config.toml`.
+
+For local development with the Docker Compose database, start from the example
+config. It is already configured for the local database and app role created by
+`migrations/00_init_database.psql`.
+
+```
+cp config.toml.example config.toml
+```
+
+Edit `config.toml` if you need a different RPC URL.
+
+Then run the indexer:
+
+```
+cargo run
 ```
 
 ## Connect to the db for exploration
 
 ```
-psql -U monad_staking_app -h localhost -p 5400
+PGPASSWORD=monad_staking_app psql -h 127.0.0.1 -p 5400 -U monad_staking_app -d monad_staking_indexer
 ```
