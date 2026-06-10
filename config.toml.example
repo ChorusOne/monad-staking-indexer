@@ -1,5 +1,6 @@
 # Monad Staking Indexer Configuration
 # Copy this file to config.toml and adjust the values as needed.
+# The defaults below match the local Docker Compose database.
 # All settings can be overridden with environment variables.
 
 # RPC WebSocket URL for connecting to Monad node
@@ -23,7 +24,7 @@ backfill_interval_secs = 300
 [metrics]
 # Bind address for metrics server
 # Can be overridden with INDEXER__METRICS__BIND_ADDRESS
-bind_address = "0.0.0.0"
+bind_address = "127.0.0.1"
 
 # Port for metrics server
 # Can be overridden with INDEXER__METRICS__PORT
@@ -34,15 +35,16 @@ port = 9090
 # Can be overridden with INDEXER__LOGGING__LEVEL
 level = "info"
 
-# Database credentials (choose one method: [db_credentials] OR [vault])
+# Database credentials (choose one method: [db_credentials] OR [vault]).
+# The direct credentials below match migrations/00_init_database.psql.
 
-# Option 1: Direct credentials
-# Uncomment to use direct database credentials
-#[db_credentials]
-#user = "monad_staking_app"
-#password = "monad_staking_app"
+# Option 1: Direct credentials for local development
+[db_credentials]
+user = "monad_staking_app"
+password = "monad_staking_app"
 
 # Option 2: Vault credentials (recommended for production)
+# Remove [db_credentials] before enabling Vault.
 # The secret at db_secret_path must contain { user = "...", password = "..." }
 
 # Option 2a: Token-based Vault authentication
