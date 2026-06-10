@@ -436,10 +436,11 @@ fn test_multiple_validator_rewarded_events_same_tx() {
             .expect("should have ValidatorRewarded stats");
         assert_eq!(rewarded_stats, &(3, 3), "all 3 events should be inserted");
 
-        let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM validator_rewarded_events WHERE transaction_hash = '0xdeadbeef'")
-                .fetch_one(&pool)
-                .await?;
+        let count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM validator_rewarded_events WHERE transaction_hash = '0xdeadbeef'",
+        )
+        .fetch_one(&pool)
+        .await?;
         assert_eq!(count.0, 3);
 
         Ok(())
