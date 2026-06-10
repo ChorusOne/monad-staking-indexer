@@ -118,6 +118,7 @@ pub async fn process_backfill_task(
             Ok(()) => continue,
             Err(e) => {
                 error!("Backfill work failed: {e:?}, reconnecting...");
+                reconnect_provider.mark_current_failed();
                 client = reconnect_provider.connect(&metrics_tx).await;
             }
         }
@@ -149,6 +150,7 @@ pub async fn process_live_blocks_task(
             Ok(stream) => stream,
             Err(e) => {
                 error!("Failed to start event stream: {:?}", e);
+                reconnect_provider.mark_current_failed();
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
@@ -201,6 +203,7 @@ pub async fn process_live_blocks_task(
 
         error!("Event stream closed (timeout or error), reconnecting...");
         let _ = metrics_tx.send(metrics::Metric::RpcTimeout);
+        reconnect_provider.mark_current_failed();
     }
 }
 

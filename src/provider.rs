@@ -41,6 +41,10 @@ impl ReconnectProvider {
         }
     }
 
+    pub fn mark_current_failed(&mut self) {
+        self.attempts += 1;
+    }
+
     pub async fn connect(
         &mut self,
         metrics_tx: &mpsc::UnboundedSender<Metric>,
@@ -63,12 +67,12 @@ impl ReconnectProvider {
                 Ok(Err(e)) => {
                     error!("Failed to connect to {url}: {e:?}");
                     let _ = metrics_tx.send(Metric::RpcConnRefused);
-                    self.attempts += 1;
+                    self.mark_current_failed();
                 }
                 Err(_) => {
                     error!("Timed out connecting to {url}");
                     let _ = metrics_tx.send(Metric::RpcTimeout);
-                    self.attempts += 1;
+                    self.mark_current_failed();
                 }
             }
 
