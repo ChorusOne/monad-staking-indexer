@@ -98,14 +98,18 @@ pub async fn process_block_gap(
         );
     }
 
-    let mut had_error = false;
-
     for chunk_range in chunks.iter() {
         debug!("Backfilling chunk: blocks {:?}", chunk_range);
         let blocks_processed = chunk_range.end - chunk_range.start;
 
         let res = client.historical_logs(chunk_range).await.and_then(|logs| {
-            process_historical_logs(logs, log_tx.clone(), tx_fetch_tx, validator_filter)
+            if logs.is_empty() {
+                Err(eyre::eyre!(
+                    "RPC returned no logs for non-empty historical block range {chunk_range:?}"
+                ))
+            } else {
+                process_historical_logs(logs, log_tx.clone(), tx_fetch_tx, validator_filter)
+            }
         });
 
         let metric = match &res {
@@ -115,8 +119,10 @@ pub async fn process_block_gap(
             }
             Err(e) => {
                 error!("Failed to backfill {chunk_range:?}: {e:?}");
-                had_error = true;
-                metrics::Metric::FailedToBackfill(blocks_processed)
+                let _ = metrics_tx.send(metrics::Metric::FailedToBackfill(blocks_processed));
+                return Err(eyre::eyre!(
+                    "Failed to backfill {chunk_range:?} in range {range:?}: {e:?}"
+                ));
             }
         };
         let _ = metrics_tx.send(metric);
@@ -126,11 +132,7 @@ pub async fn process_block_gap(
         range.end - range.start
     );
 
-    if had_error {
-        Err(eyre::eyre!("One or more chunks failed in range {range:?}"))
-    } else {
-        Ok(())
-    }
+    Ok(())
 }
 
 pub async fn process_transaction_fetch(
