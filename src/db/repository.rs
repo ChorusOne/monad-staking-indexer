@@ -196,7 +196,7 @@ pub async fn get_missing_delegator_snapshots(
             AND ds.block_number = ece.block_number
             AND ds.validator_id = $1
         WHERE ds.epoch IS NULL
-        AND ece.new_epoch > 746
+        AND ece.new_epoch > 1650
         ORDER BY ece.new_epoch
         "#,
     )
